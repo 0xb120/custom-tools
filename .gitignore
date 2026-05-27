@@ -1,0 +1,3 @@
+# Secrets — master env file copied into every new engagement's .devcontainer/.env
+# by org/newPT.sh. Populate once, never commit.
+org/conf/devcontainer.env

@@ -1,0 +1,27 @@
+{
+  "name": "pentest-{{ACTIVITY_NAME}}",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "args": {
+      "BASE_IMAGE": "{{BASE_IMAGE}}",
+      "INSTALL_GROUPS": "{{INSTALL_GROUPS}}",
+      "CUSTOM_TOOLS_REF": "{{CUSTOM_TOOLS_REF}}"
+    },
+    "options": ["--ssh=default"]
+  },
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "remoteUser": "pentester",
+  "containerUser": "pentester",
+  "mounts": [
+    "source=${localEnv:HOME}/.claude,target=/home/pentester/.claude,type=bind",
+    "source=${localEnv:HOME}/.ssh,target=/home/pentester/.ssh,type=bind,readonly"
+  ],
+  "runArgs": [
+    "--name", "{{ACTIVITY_NAME}}",
+    "--cap-add=NET_RAW",
+    "--cap-add=NET_ADMIN",
+    "--env-file", "${localWorkspaceFolder}/.devcontainer/.env"
+  ],
+  "postCreateCommand": "echo 'Engagement container ready. Run: claude'"
+}

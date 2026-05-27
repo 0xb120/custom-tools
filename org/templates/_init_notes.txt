@@ -1,0 +1,11 @@
+# Kickoff notes — paste raw notes from the kickoff call / mail thread below.
+#
+# When ready, ask Claude to fill in AGENT.md from this file (e.g. prompt:
+# "populate AGENT.md placeholders using _init_notes.txt"). The agent will
+# NOT read this file autonomously — it's a working pad that you point
+# Claude at when convenient.
+#
+# Paste whatever is relevant: client and contact names, dates, in-scope
+# assets, out-of-scope rules, credentials handling, custom headers, source
+# IPs, methodology (black/grey/white-box), environment (prod/pre-prod), …
+

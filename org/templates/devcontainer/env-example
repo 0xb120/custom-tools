@@ -1,0 +1,10 @@
+# Example env file for engagement devcontainers. Real values live in
+# org/conf/devcontainer.env (gitignored), which newPT.sh copies into each new
+# engagement's .devcontainer/.env. Edit that master file once with your keys.
+
+ANTHROPIC_API_KEY=
+
+# Common optional keys — uncomment as needed:
+# OPENAI_API_KEY=
+# SHODAN_API_KEY=
+# GITHUB_TOKEN=
