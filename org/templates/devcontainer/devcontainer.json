@@ -21,6 +21,7 @@
     "--name", "{{ACTIVITY_NAME}}",
     "--cap-add=NET_RAW",
     "--cap-add=NET_ADMIN",
+    "--network=host",
     "--env-file", "${localWorkspaceFolder}/.devcontainer/.env"
   ],
   "postCreateCommand": "echo 'Engagement container ready. Run: claude'"

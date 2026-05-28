@@ -337,13 +337,14 @@ install_base() {
     sudo apt update
     sudo apt install -y \
         git curl wget jq zip unzip ncat openssh-client sshpass tmux pipx python3-pip bat gnupg \
-        sqlite3 gcc make libpcap-dev chromium asciinema ripgrep ca-certificates \
+        sqlite3 gcc make libpcap-dev chromium asciinema ripgrep ca-certificates xxd \
         redis-tools ruby ruby-dev nodejs npm
 
     install_docker
     install_go
 
-    sudo apt install -y locate snmp ldap-utils tcpdump net-tools
+    sudo apt install -y locate snmp ldap-utils tcpdump net-tools \
+        iputils-ping iputils-tracepath iproute2 dnsutils traceroute mtr-tiny whois telnet
     # snmp-mibs-downloader lives in non-free (proprietary MIB licenses) — present
     # on pentest hosts (Kali/Parrot), absent on slim Debian/Ubuntu images that
     # only enable `main`. It's a convenience (translates OIDs to symbolic names);
