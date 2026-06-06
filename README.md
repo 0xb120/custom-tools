@@ -2,6 +2,8 @@
 
 Collection of custom scripts for penetration testing and bug bounty automation. Covers the full workflow from scope ingestion to vulnerability reporting.
 
+Planned features and their design notes live in [`ROADMAP.md`](ROADMAP.md).
+
 ---
 
 ## Directory Overview
