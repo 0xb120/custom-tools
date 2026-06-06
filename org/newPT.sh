@@ -83,7 +83,12 @@ if [ -z "$activity_name" ]; then
 fi
 
 # Create the folder structure
-mkdir -p "$activity_name"/{attachments,scans,poc,findings,wl}
+mkdir -p "$activity_name"/{attachments,scans,poc,findings,wl,logs}
+
+# The command audit log (written by the .claude/hooks/log-command.sh hook) can
+# embed secrets (sprayed passwords, auth headers, SSH keys). Keep logs/ out of
+# any shared repo — same rule as wl/.
+printf '*\n!.gitignore\n' > "$activity_name/logs/.gitignore"
 
 # Create the scope files and the per-engagement empty files
 touch "$activity_name"/scope.txt
@@ -150,8 +155,12 @@ chmod 600 "$activity_name/.devcontainer/.env"
 cp "$template_dir/devcontainer/gitignore" "$activity_name/.devcontainer/.gitignore"
 
 # .claude/ — engagement-scoped Claude Code config (verbatim copy, no placeholders).
-mkdir -p "$activity_name/.claude"
+# settings.json wires the hooks below; hooks/ holds the scripts it calls
+# (command audit log, DB→Markdown auto-render, report-prose formatting check).
+mkdir -p "$activity_name/.claude/hooks"
 cp "$template_dir/claude/settings.json" "$activity_name/.claude/settings.json"
+cp "$template_dir/claude/hooks/"*.sh "$activity_name/.claude/hooks/"
+chmod +x "$activity_name/.claude/hooks/"*.sh
 
 cat <<EOF
 

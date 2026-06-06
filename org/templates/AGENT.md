@@ -63,6 +63,7 @@ Everything produced during the engagement must live under this folder, organised
 │   └── <finding_slug>.md    # schema in "Findings" section below
 ├── poc/                     # proof-of-concept artefacts, one folder per finding
 │   └── <finding_slug>/      # screenshots, HTTP exchanges, exploit scripts
+├── logs/                    # command audit log (auto-written by a Claude hook) — git-ignored, may hold secrets
 └── wl/                      # wordlists + discovered creds — one file per type (see "Credential tracking")
 ```
 
