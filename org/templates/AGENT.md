@@ -111,6 +111,13 @@ Each finding has **three** related artefacts, all sharing the same `finding_slug
 
 Do all four in the same session. The DB row holds the structured metadata (severity, status, segment, paths); the per-finding `.md` holds the prose. Both must exist for the same `slug`. **Never edit the rendered findings index by hand** — it's regenerated from the DB on every render.
 
+#### Prose formatting
+
+All report prose — finding write-ups, the executive summary, any text destined for the report — must be **copy-paste-ready with valid Markdown**. The single rule that matters:
+
+- **Never hard-wrap mid-sentence.** Write each paragraph as one continuous line and let the renderer wrap it. Do not insert manual newlines to keep the source column-aligned — a paragraph split across several short lines breaks reflow, copy-paste, and search the moment it lands in the report.
+- Hard newlines belong **only** between paragraphs, list items, table rows, and other block boundaries — never inside a flowing sentence.
+
 #### Per-finding file (`findings/<finding_slug>.md`)
 
 Each file must ALWAYS include:
