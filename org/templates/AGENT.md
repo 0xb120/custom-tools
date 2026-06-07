@@ -263,8 +263,11 @@ sqlite3 db/engagement.db "INSERT INTO finding
 | `assets-by-segment.sql` | Count of assets per segment |
 | `creds-multi-host.sql` | Credentials verified on more than one asset |
 | `findings-open.sql` | Open findings, severity-sorted |
+| `host-dossier.sql` | Everything the DB knows about one host (bind `:host` first) |
 
 Run any of them with `sqlite3 db/engagement.db < db/queries/<name>.sql`.
+
+**What do we know about one host?** `bash db/whatweknow.sh <host>` folds three sources into a single host-centric view: the DB rows (`host-dossier.sql`), journal entries tagged `@<host>`, and raw `scans/` output mentioning the host — the last catches scan details that never made it into the DB.
 
 **Refresh the markdown view**: `bash db/render.sh` — re-run after each batch of writes and before committing.
 
@@ -325,7 +328,8 @@ Format:
 
 - Date headers `## YYYY-MM-DD`, one per active day.
 - Free-form entries underneath, tagged inline for retrieval: `#observation`, `#hypothesis`, `#dead-end`, `#decision`.
+- Tag the host(s) an entry concerns with `@<host>` (e.g. `@10.0.0.5`, `@portal.example.com`). This is the journal's host index — `grep '@10.0.0.5' journal.md` reconstructs that target's full analysis history in one shot.
 - Entries are immutable. To update or close one, append a new dated entry that references the original (don't edit in place).
 - When an entry implies a follow-up action, log the observation here AND create a `- [ ]` item in `TODO.md` (cross-reference by short description).
 
-Slice any tag with `grep '#hypothesis' journal.md`.
+Slice any tag with `grep '#hypothesis' journal.md`. For everything known about one host across all sources, run `bash db/whatweknow.sh <host>`.
