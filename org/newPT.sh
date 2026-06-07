@@ -117,6 +117,7 @@ cp "$template_dir/_init_notes.txt" "$activity_name"/_init_notes.txt
 mkdir -p "$activity_name/db/queries"
 cp "$template_dir/db/schema.sql"  "$activity_name/db/schema.sql"
 cp "$template_dir/db/render.sh"   "$activity_name/db/render.sh"
+cp "$template_dir/db/whatweknow.sh" "$activity_name/db/whatweknow.sh"
 cp "$template_dir/db/queries/"*.sql "$activity_name/db/queries/"
 sqlite3 "$activity_name/db/engagement.db" < "$template_dir/db/schema.sql" >/dev/null
 

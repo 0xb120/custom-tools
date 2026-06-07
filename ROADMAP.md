@@ -6,9 +6,9 @@ Status legend: `idea` (needs design) · `ready` (design agreed, can build) · `i
 
 ---
 
-## 1. Host-indexed engagement memory
+## 1. Host-indexed engagement memory — ✅ done (see § Done)
 
-**Status:** `ready` · **Size:** S · **Area:** `org/templates/` (AGENT.md + a DB query/helper)
+**Status:** `done` · **Size:** S · **Area:** `org/templates/` (AGENT.md + a DB query/helper)
 
 **Motivation.** When the LLM (or operator) resumes an engagement and asks *"what do we already know about `10.0.0.5`?"*, the answer today is scattered: structured columns in `db/engagement.db` (`asset`), free-text in `journal.md` (which is **chronological**, not host-indexed), and raw output under `scans/`. There is no host-centric view of prior analysis. We explicitly rejected "one note file per asset" — it fights the DB-as-source-of-truth model, drifts against the `asset`/`finding` tables, and a fragmented pile of files *hurts* LLM recall rather than helping it (more to read, more contradictions, not auto-loaded into context).
 
@@ -62,4 +62,12 @@ Status legend: `idea` (needs design) · `ready` (design agreed, can build) · `i
 
 ## Done
 
-_(empty — move shipped items here with their commit hash.)_
+### 1. Host-indexed engagement memory — `f69dc32`
+
+Shipped both pieces from the design, plus a third source we added during build:
+
+- **`@host` journal tag** — documented in `org/templates/AGENT.md` § Working journal alongside the existing `#tag` namespace. `grep '@10.0.0.5' journal.md` reconstructs a target's history.
+- **`host-dossier.sql`** (`org/templates/db/queries/`) — DB-side view: assets / segments / credentials / findings for a bound `:host`.
+- **`whatweknow.sh`** (`org/templates/db/`) — wrapper folding **three** sources, not two: the DB view + `@host` journal grep + **raw `scans/` output mentioning the host**. The raw-scan source was added because the model doesn't always transcribe every banner / version / open port into the DB — those details survive only in the raw output, and a DB-only dossier would silently omit them. Copied into each engagement by `org/newPT.sh`. Host value is charset-guarded (`[A-Za-z0-9.:_-]`) before reaching the SQLite `.param` dot-command to close the quote-injection hole.
+
+**Deferred (open question #2):** the `SessionStart`-hook auto-surfacing of dossiers for `access IS NULL` hosts was left out to avoid context bloat — revisit if recall priming proves worth it.
