@@ -5,10 +5,11 @@ SELECT c.username,
        c.secret,
        c.secret_type,
        COUNT(*) AS n_assets,
-       GROUP_CONCAT(a.host || ':' || a.port, ', ') AS hosts
+       GROUP_CONCAT(h.name || ':' || a.port, ', ') AS hosts
 FROM credential c
 JOIN credential_asset ca ON ca.credential_id = c.id
 JOIN asset a             ON a.id = ca.asset_id
+JOIN host h              ON h.id = a.host_id
 WHERE ca.verified_at IS NOT NULL
 GROUP BY c.id
 HAVING n_assets > 1

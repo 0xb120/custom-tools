@@ -3,7 +3,8 @@
 .headers on
 SELECT s.name AS segment, COUNT(*) AS n_assets
 FROM asset a
-JOIN asset_segment ass ON ass.asset_id = a.id
-JOIN segment s         ON s.id = ass.segment_id
+JOIN host h          ON h.id = a.host_id
+JOIN host_segment hs ON hs.host_id = h.id
+JOIN segment s       ON s.id = hs.segment_id
 GROUP BY s.name
 ORDER BY n_assets DESC;

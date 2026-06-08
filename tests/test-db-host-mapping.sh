@@ -97,4 +97,39 @@ out_recycled="$(sqlite3 "$db" ".param set :host '10.0.0.5'" ".read $DOSSIER")"
 echo "$out_recycled" | grep -q "DC01" || fail "recycled-IP dossier should still include the retired owner DC01"
 echo "$out_recycled" | grep -q "PC02" || fail "recycled-IP dossier should include the current owner PC02"
 pass "recycled IP resolves to both retired and current owners (documented multi-host behavior)"
+
+# ===========================================================================
+# Section C — saved queries run on the new schema (Task 3)
+# ===========================================================================
+QDIR="$ROOT/org/templates/db/queries"
+db="$TMP/c.db"
+sqlite3 "$db" < "$SCHEMA"
+sqlite3 "$db" "INSERT INTO segment (name) VALUES ('server');"
+sqlite3 "$db" "INSERT INTO host (name) VALUES ('DC01');"
+sqlite3 "$db" "INSERT INTO host_ip (host_id, ip) VALUES (1, '10.0.0.9');"
+sqlite3 "$db" "INSERT INTO host_segment (host_id, segment_id) VALUES (1, 1);"
+sqlite3 "$db" "INSERT INTO asset (host_id, port, protocol) VALUES (1, 445, 'smb');"
+sqlite3 "$db" "INSERT INTO asset (host_id, port, protocol) VALUES (1, 3389, 'rdp');"
+sqlite3 "$db" "INSERT INTO credential (username, secret, secret_type) VALUES ('admin','x','password');"
+sqlite3 "$db" "INSERT INTO credential_asset (credential_id, asset_id, verified_at) VALUES (1, 1, CURRENT_TIMESTAMP);"
+sqlite3 "$db" "INSERT INTO credential_asset (credential_id, asset_id, verified_at) VALUES (1, 2, CURRENT_TIMESTAMP);"
+
+for q in assets-by-segment assets-no-access creds-multi-host findings-open hosts; do
+    sqlite3 "$db" < "$QDIR/$q.sql" >/dev/null 2>"$TMP/q.err" || \
+        { echo "--- $q stderr ---" >&2; cat "$TMP/q.err" >&2; fail "$q.sql failed on new schema"; }
+done
+pass "all saved queries run clean on the new schema"
+
+# assets-by-segment counts the server segment's assets
+sqlite3 "$db" < "$QDIR/assets-by-segment.sql" | grep -q "server" || \
+    fail "assets-by-segment should report the 'server' segment"
+# hosts map shows the name and its current IP
+hosts_out="$(sqlite3 "$db" < "$QDIR/hosts.sql")"
+echo "$hosts_out" | grep -q "DC01"     || fail "hosts.sql should list DC01"
+echo "$hosts_out" | grep -q "10.0.0.9" || fail "hosts.sql should show current IP 10.0.0.9"
+# creds-multi-host concatenates by host name, not by a (gone) asset.host column
+sqlite3 "$db" < "$QDIR/creds-multi-host.sql" | grep -q "DC01:445" || \
+    fail "creds-multi-host should group by host name (DC01:445)"
+pass "queries reflect host joins (segment count, host map, cred pivots)"
+
 echo "All tests passed."
