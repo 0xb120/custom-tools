@@ -203,7 +203,8 @@ What lives where:
 
 | Data | Source of truth | Rendered to |
 |------|-----------------|-------------|
-| Asset inventory | DB (`asset`, `asset_segment`) | `<activity_name>.md` § Asset inventory |
+| Host map (name↔IP) | DB (`host`, `host_ip`, `host_segment`) | `<activity_name>.md` § Host inventory |
+| Asset inventory | DB (`host`, `host_ip`, `asset`, `host_segment`) | `<activity_name>.md` § Asset inventory |
 | Valid credentials | DB (`credential`, `credential_asset`) | `<activity_name>.md` § Valid credentials |
 | Finding metadata | DB (`finding`, `finding_asset`) | `<activity_name>.md` § Findings index |
 | Finding prose | `findings/<slug>.md` (markdown) — DB row's `evidence_path` points here | — |
@@ -213,30 +214,45 @@ What lives where:
 **Common writes** (operator and agent run these as needed):
 
 ```bash
-# Define segments first — needed before assets/findings can reference them.
+# Define segments first — needed before hosts/findings can reference them.
 sqlite3 db/engagement.db "INSERT INTO segment (name, description) VALUES
   ('server', 'on-prem servers'),
   ('pc',     'workstations');"
 
-# Add an asset; link it to a segment.
+# Register a machine. At IP-first discovery the name IS the IP; rename it in
+# place once DNS/NetBIOS resolves (the host id — the stable identity — is kept).
+sqlite3 db/engagement.db "INSERT INTO host (name) VALUES ('10.0.0.5');"
+# host_id via sub-select — last_insert_rowid() is per-connection and would be 0 in a separate sqlite3 call.
+sqlite3 db/engagement.db "INSERT INTO host_ip (host_id, ip)
+  VALUES ((SELECT id FROM host WHERE name='10.0.0.5'), '10.0.0.5');"
+sqlite3 db/engagement.db "UPDATE host SET name='DC01', dns='dc01.corp.local', mac='00:11:22:33:44:55'
+  WHERE name='10.0.0.5';"
+sqlite3 db/engagement.db "INSERT INTO host_segment (host_id, segment_id)
+  VALUES ((SELECT id FROM host WHERE name='DC01'), (SELECT id FROM segment WHERE name='server'));"
+
+# DHCP moved the machine: retire the old lease, record the new current IP.
+sqlite3 db/engagement.db "UPDATE host_ip SET current=0 WHERE ip='10.0.0.5' AND current=1;"
+sqlite3 db/engagement.db "INSERT INTO host_ip (host_id, ip)
+  VALUES ((SELECT id FROM host WHERE name='DC01'), '10.0.0.9')
+  ON CONFLICT(host_id, ip) DO UPDATE SET current=1, last_seen=CURRENT_TIMESTAMP;"
+
+# Add a service (asset) on that machine.
 sqlite3 db/engagement.db "INSERT INTO asset
-  (host, port, protocol, tls, version, technologies)
-  VALUES ('10.0.0.5', 443, 'https', 1, 'nginx/1.24', 'nginx, php');"
-sqlite3 db/engagement.db "INSERT INTO asset_segment (asset_id, segment_id)
-  VALUES (last_insert_rowid(), (SELECT id FROM segment WHERE name='server'));"
+  (host_id, port, protocol, tls, version, technologies)
+  VALUES ((SELECT id FROM host WHERE name='DC01'), 445, 'smb', 0, 'Windows Server 2019', 'smb');"
 
 # Record a credential and verify it against an asset (the moment it authenticates).
 # source_path is optional — set it to the file the cred came from (wl/hashes-*.txt,
 # scans/.../dump.txt, …) so you can trace back where it was extracted.
-sqlite3 db/engagement.db "INSERT INTO credential
-  (username, secret, secret_type, role, source, source_path)
-  VALUES ('admin', 'P@ssw0rd', 'password', 'admin', 'sprayed', 'wl/passwords.txt');"
-sqlite3 db/engagement.db "INSERT INTO credential_asset
-  (credential_id, asset_id, verified_at)
-  VALUES (last_insert_rowid(),
-          (SELECT id FROM asset WHERE host='10.0.0.5' AND port=443),
-          CURRENT_TIMESTAMP);"
-sqlite3 db/engagement.db "UPDATE asset SET access='admin' WHERE host='10.0.0.5' AND port=443;"
+# Chain the two INSERTs in one sqlite3 call so last_insert_rowid() (per-connection) resolves the credential.
+sqlite3 db/engagement.db "
+  INSERT INTO credential (username, secret, secret_type, role, source, source_path)
+    VALUES ('admin', 'P@ssw0rd', 'password', 'admin', 'sprayed', 'wl/passwords.txt');
+  INSERT INTO credential_asset (credential_id, asset_id, verified_at)
+    VALUES (last_insert_rowid(),
+            (SELECT id FROM asset WHERE host_id=(SELECT id FROM host WHERE name='DC01') AND port=445),
+            CURRENT_TIMESTAMP);"
+sqlite3 db/engagement.db "UPDATE asset SET access='admin' WHERE host_id=(SELECT id FROM host WHERE name='DC01') AND port=445;"
 
 # Index a new finding (prose still lives in findings/<slug>.md).
 # evidence_path defaults to 'findings/<slug>.md' and poc_dir to 'poc/<slug>/'
@@ -263,21 +279,25 @@ sqlite3 db/engagement.db "INSERT INTO finding
 | `assets-by-segment.sql` | Count of assets per segment |
 | `creds-multi-host.sql` | Credentials verified on more than one asset |
 | `findings-open.sql` | Open findings, severity-sorted |
-| `host-dossier.sql` | Everything the DB knows about one host (bind `:host` first) |
+| `hosts.sql` | The name↔IP host map (current + past IPs, segments) |
+| `host-dossier.sql` | Everything the DB knows about one machine — bind `:host` to a name or any IP it has held |
 
 Run any of them with `sqlite3 db/engagement.db < db/queries/<name>.sql`.
 
-**What do we know about one host?** `bash db/whatweknow.sh <host>` folds three sources into a single host-centric view: the DB rows (`host-dossier.sql`), journal entries tagged `@<host>`, and raw `scans/` output mentioning the host — the last catches scan details that never made it into the DB.
+**What do we know about one machine?** `bash db/whatweknow.sh <name-or-ip>` folds the DB dossier (`host-dossier.sql`), journal entries, and raw `scans/` output into a single machine-centric view — across the machine's full token set: its `name`, `dns`, and every IP it has ever held. So a scan captured under a now-retired DHCP IP still surfaces when you query by the stable name.
 
 **Refresh the markdown view**: `bash db/render.sh` — re-run after each batch of writes and before committing.
 
 ### Asset tracking
 
-Every discovered service — IP/hostname + port — gets a row in `db/engagement.db` (`asset` + `asset_segment`). Rendered to `<activity_name>.md` § Asset inventory by `bash db/render.sh`, one sub-table per segment. INSERT at first discovery, `UPDATE` in place as enrichment lands — never duplicate rows for the same `(host, port)` (the schema enforces `UNIQUE(host, port)`). **Never edit the rendered tables by hand**; see § Engagement database for the INSERT/UPDATE snippets.
+Every discovered service — a port on a machine — gets a row in `db/engagement.db` (`asset`), hanging off the machine (`host`) it runs on via `host_id`. Register the machine first (`host` + `host_ip`), then add its services. Rendered to `<activity_name>.md` § Asset inventory by `bash db/render.sh`, one sub-table per segment. INSERT at first discovery, `UPDATE` in place as enrichment lands — never duplicate rows for the same service (the schema enforces `UNIQUE(host_id, port)`). **Never edit the rendered tables by hand**; see § Engagement database for the INSERT/UPDATE snippets.
+
+Host vs. service:
+
+A service row (`asset`) hangs off a machine (`host`) via `host_id`. The machine's `name` is its stable identity — provisional (= the IP) at discovery, renamed in place once DNS/NetBIOS resolves, keeping the same id. Every IP the machine has held lives in `host_ip` (`current=1` = the live lease, retired leases kept for history). Segment membership is on the machine (`host_segment`) and inherited by all its services. `UNIQUE(host_id, port)` replaces the old `UNIQUE(host, port)`.
 
 Column semantics:
 
-- `host` — IP for external/internal, hostname for web. Pick the canonical form per segment.
 - `port` / `protocol` / `tls` — straight from the fingerprint (`httpx`, `fingerprintx`, `naabu` + probe). `tls` is `0` / `1`.
 - `version` — banner / Server header / SNI cert subject; whatever identifies the service build.
 - `technologies` — stack fingerprint (CMS, framework, library, …), comma-separated. From `httpx -tech-detect`, Wappalyzer, manual recon.
@@ -328,8 +348,8 @@ Format:
 
 - Date headers `## YYYY-MM-DD`, one per active day.
 - Free-form entries underneath, tagged inline for retrieval: `#observation`, `#hypothesis`, `#dead-end`, `#decision`.
-- Tag the host(s) an entry concerns with `@<host>` (e.g. `@10.0.0.5`, `@portal.example.com`). This is the journal's host index — `grep '@10.0.0.5' journal.md` reconstructs that target's full analysis history in one shot.
+- Tag the machine an entry concerns with `@<name>` — the stable host name (fall back to `@<ip>` only when the name isn't known yet; `whatweknow.sh` expands either to the machine's full alias set). This is the journal's host index — `grep '@DC01' journal.md` reconstructs that machine's full analysis history in one shot.
 - Entries are immutable. To update or close one, append a new dated entry that references the original (don't edit in place).
 - When an entry implies a follow-up action, log the observation here AND create a `- [ ]` item in `TODO.md` (cross-reference by short description).
 
-Slice any tag with `grep '#hypothesis' journal.md`. For everything known about one host across all sources, run `bash db/whatweknow.sh <host>`.
+Slice any tag with `grep '#hypothesis' journal.md`. For everything known about one machine across all sources, run `bash db/whatweknow.sh <name-or-ip>`.
