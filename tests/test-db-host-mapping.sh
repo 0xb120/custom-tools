@@ -64,4 +64,37 @@ fi
 pass "at most one current owner per IP enforced"
 
 echo "Section A passed."
+
+# ===========================================================================
+# Section B — host-dossier.sql resolves by name AND by historical IP (Task 2)
+# ===========================================================================
+DOSSIER="$ROOT/org/templates/db/queries/host-dossier.sql"
+db="$TMP/b.db"
+sqlite3 "$db" < "$SCHEMA"
+sqlite3 "$db" "INSERT INTO segment (name) VALUES ('server');"
+sqlite3 "$db" "INSERT INTO host (name, dns) VALUES ('DC01', 'dc01.corp.local');"
+sqlite3 "$db" "INSERT INTO host_ip (host_id, ip, current) VALUES (1, '10.0.0.5', 0);"
+sqlite3 "$db" "INSERT INTO host_ip (host_id, ip, current) VALUES (1, '10.0.0.9', 1);"
+sqlite3 "$db" "INSERT INTO host_segment (host_id, segment_id) VALUES (1, 1);"
+sqlite3 "$db" "INSERT INTO asset (host_id, port, protocol) VALUES (1, 445, 'smb');"
+
+out_by_name="$(sqlite3 "$db" ".param set :host 'DC01'"      ".read $DOSSIER")"
+out_by_oldip="$(sqlite3 "$db" ".param set :host '10.0.0.5'" ".read $DOSSIER")"
+
+echo "$out_by_name"  | grep -q "dc01.corp.local" || fail "dossier-by-name should show dns"
+echo "$out_by_name"  | grep -qw "445"             || fail "dossier-by-name should list the smb asset"
+echo "$out_by_name"  | grep -q "10.0.0.5"         || fail "dossier-by-name should show historical IP 10.0.0.5"
+echo "$out_by_oldip" | grep -q "DC01"             || fail "dossier resolved by an OLD ip should still find DC01"
+pass "host-dossier resolves by name and by historical IP, shows IP history + assets"
+
+# Recycled IP: 10.0.0.5 is retired on DC01 but later becomes PC02's CURRENT
+# lease — a constraint-legal DHCP reuse (idx_host_ip_one_owner only forbids two
+# CURRENT owners). Querying that IP is ambiguous, so the dossier intentionally
+# spans both machines; the identity section names each.
+sqlite3 "$db" "INSERT INTO host (name) VALUES ('PC02');"
+sqlite3 "$db" "INSERT INTO host_ip (host_id, ip, current) VALUES (2, '10.0.0.5', 1);"
+out_recycled="$(sqlite3 "$db" ".param set :host '10.0.0.5'" ".read $DOSSIER")"
+echo "$out_recycled" | grep -q "DC01" || fail "recycled-IP dossier should still include the retired owner DC01"
+echo "$out_recycled" | grep -q "PC02" || fail "recycled-IP dossier should include the current owner PC02"
+pass "recycled IP resolves to both retired and current owners (documented multi-host behavior)"
 echo "All tests passed."
