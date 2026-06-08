@@ -15,12 +15,55 @@ CREATE TABLE IF NOT EXISTS segment (
 );
 
 -- ---------------------------------------------------------------------------
--- Assets: one row per (host, port). N:M with segments via asset_segment
--- (covers dual-homed hosts reachable from more than one vantage point).
+-- Hosts: one row per logical machine — the engagement's stable identity.
+-- `name` is a human-readable handle that does NOT change when DHCP reassigns
+-- the IP: at first discovery it is the IP, renamed in place once the DNS /
+-- NetBIOS name is known. Every IP the machine has held lives in host_ip.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS host (
+  id          INTEGER PRIMARY KEY,
+  name        TEXT NOT NULL UNIQUE,       -- stable speaking name; = IP until DNS resolves
+  dns         TEXT,                       -- FQDN if richer than name (e.g. dc01.corp.local)
+  mac         TEXT,                       -- layer-2 anchor, DHCP-immune (may be unknown off-segment)
+  notes       TEXT,
+  first_seen  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_seen   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TRIGGER IF NOT EXISTS host_touch_last_seen
+AFTER UPDATE ON host
+FOR EACH ROW
+WHEN NEW.last_seen = OLD.last_seen
+BEGIN
+  UPDATE host SET last_seen = CURRENT_TIMESTAMP WHERE id = NEW.id;
+END;
+
+-- ---------------------------------------------------------------------------
+-- IP lease ledger: every IP a host has held over time. `current=1` flags the
+-- active lease. Under DHCP the same IP may later be reused by a different
+-- machine, so uniqueness is per (host_id, ip) — NOT global. The partial unique
+-- indexes enforce one current IP per host and one current owner per IP.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS host_ip (
+  id          INTEGER PRIMARY KEY,
+  host_id     INTEGER NOT NULL REFERENCES host(id) ON DELETE CASCADE,
+  ip          TEXT NOT NULL,
+  current     INTEGER NOT NULL DEFAULT 1 CHECK (current IN (0, 1)),
+  first_seen  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_seen   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (host_id, ip)                    -- a recurring IP just flips current back on
+);
+
+CREATE INDEX IF NOT EXISTS idx_host_ip_ip ON host_ip(ip);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_host_ip_one_current ON host_ip(host_id) WHERE current = 1;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_host_ip_one_owner   ON host_ip(ip)      WHERE current = 1;
+
+-- ---------------------------------------------------------------------------
+-- Assets: one row per (host, port) SERVICE. Hangs off a host (the machine).
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS asset (
   id            INTEGER PRIMARY KEY,
-  host          TEXT NOT NULL,
+  host_id       INTEGER NOT NULL REFERENCES host(id) ON DELETE CASCADE,
   port          INTEGER NOT NULL,
   protocol      TEXT,
   tls           INTEGER CHECK (tls IN (0, 1)),
@@ -30,17 +73,11 @@ CREATE TABLE IF NOT EXISTS asset (
   first_seen    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   last_seen     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   notes         TEXT,
-  UNIQUE (host, port)
+  UNIQUE (host_id, port)
 );
 
-CREATE TABLE IF NOT EXISTS asset_segment (
-  asset_id   INTEGER NOT NULL REFERENCES asset(id)   ON DELETE CASCADE,
-  segment_id INTEGER NOT NULL REFERENCES segment(id) ON DELETE CASCADE,
-  PRIMARY KEY (asset_id, segment_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_asset_host   ON asset(host);
-CREATE INDEX IF NOT EXISTS idx_asset_access ON asset(access);
+CREATE INDEX IF NOT EXISTS idx_asset_host_id ON asset(host_id);
+CREATE INDEX IF NOT EXISTS idx_asset_access  ON asset(access);
 
 -- Bump last_seen on every UPDATE that doesn't explicitly set it.
 CREATE TRIGGER IF NOT EXISTS asset_touch_last_seen
@@ -50,6 +87,13 @@ WHEN NEW.last_seen = OLD.last_seen
 BEGIN
   UPDATE asset SET last_seen = CURRENT_TIMESTAMP WHERE id = NEW.id;
 END;
+
+-- Segment membership is a property of the machine, not of each port.
+CREATE TABLE IF NOT EXISTS host_segment (
+  host_id    INTEGER NOT NULL REFERENCES host(id)    ON DELETE CASCADE,
+  segment_id INTEGER NOT NULL REFERENCES segment(id) ON DELETE CASCADE,
+  PRIMARY KEY (host_id, segment_id)
+);
 
 -- ---------------------------------------------------------------------------
 -- Credentials: a username + secret (password/hash/token). N:M with assets
@@ -62,7 +106,7 @@ CREATE TABLE IF NOT EXISTS credential (
   secret_type    TEXT NOT NULL,             -- password / ntlm / bcrypt / kerberos / jwt / ssh-key / ...
   role           TEXT,                      -- admin / user / service / ...
   source         TEXT,                      -- cracked / leaked / sprayed / client-provided / recon
-  source_path    TEXT,                      -- optional: file the cred was extracted from (wl/hashes-ntlm.txt, scans/.../dump.txt, ...)
+  source_path    TEXT,                      -- optional: file the cred was extracted from
   discovered_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   notes          TEXT
 );
@@ -87,8 +131,8 @@ CREATE TABLE IF NOT EXISTS finding (
   status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','fixed','non-reproducible')),
   cwe           TEXT,                       -- 'CWE-79, CWE-89'
   segment_id    INTEGER REFERENCES segment(id),
-  evidence_path TEXT,                       -- relative path to the markdown report; auto-defaults to findings/<slug>.md on INSERT if NULL
-  poc_dir       TEXT,                       -- relative path to the evidence directory; auto-defaults to poc/<slug>/ on INSERT if NULL
+  evidence_path TEXT,                       -- relative path to the markdown report; auto-defaults on INSERT
+  poc_dir       TEXT,                       -- relative path to the evidence directory; auto-defaults on INSERT
   created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
