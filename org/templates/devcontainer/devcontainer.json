@@ -14,7 +14,7 @@
   "remoteUser": "pentester",
   "containerUser": "pentester",
   "mounts": [
-    "source=${localEnv:HOME}/.claude,target=/home/pentester/.claude,type=bind",
+    "source=${localEnv:HOME}/.claude,target=/seed/host-claude,type=bind,readonly",
     "source=${localEnv:HOME}/.ssh,target=/home/pentester/.ssh,type=bind,readonly"
   ],
   "runArgs": [
@@ -24,5 +24,5 @@
     "--network=host",
     "--env-file", "${localWorkspaceFolder}/.devcontainer/.env"
   ],
-  "postCreateCommand": "echo 'Engagement container ready. Run: claude'"
+  "postCreateCommand": "bash /home/pentester/custom-tools/org/seed-claude-env.sh apply /seed/host-claude --with-credentials || echo '[!] Claude config seed failed — launch claude and log in manually'; echo 'Engagement container ready. Run: claude'"
 }
