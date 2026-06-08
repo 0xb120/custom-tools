@@ -132,4 +132,51 @@ sqlite3 "$db" < "$QDIR/creds-multi-host.sql" | grep -q "DC01:445" || \
     fail "creds-multi-host should group by host name (DC01:445)"
 pass "queries reflect host joins (segment count, host map, cred pivots)"
 
+# ===========================================================================
+# Section D — whatweknow.sh folds in scans captured under an OLD IP (Task 4)
+# ===========================================================================
+cd "$TMP"
+rm -rf eng-d
+bash "$NEWPT" none eng-d >/dev/null || fail "scaffold eng-d failed"
+db="eng-d/db/engagement.db"
+sqlite3 "$db" "INSERT INTO host (name, dns) VALUES ('DC01', 'dc01.corp.local');"
+sqlite3 "$db" "INSERT INTO host_ip (host_id, ip, current) VALUES (1, '10.0.0.5', 0);"  # old DHCP lease
+sqlite3 "$db" "INSERT INTO host_ip (host_id, ip, current) VALUES (1, '10.0.0.9', 1);"  # current lease
+# a scan captured yesterday, labelled by the OLD ip
+mkdir -p eng-d/scans/nmap
+printf '10.0.0.5 445/tcp open microsoft-ds\n' > eng-d/scans/nmap/hosts.txt
+# a journal entry tagged by the current name
+printf '## 2026-06-08\n#observation @DC01 smb signing disabled\n' > eng-d/journal.md
+
+out="$(bash eng-d/db/whatweknow.sh DC01)" || fail "whatweknow.sh DC01 exited non-zero"
+echo "$out" | grep -q "dc01.corp.local"            || fail "dossier section missing (DB view)"
+echo "$out" | grep -q "10.0.0.5"                    || fail "should surface the OLD ip from the ledger"
+echo "$out" | grep -q "microsoft-ds"                || fail "should fold in the scan captured under the OLD ip"
+echo "$out" | grep -q "smb signing disabled"        || fail "should fold in the @DC01 journal entry"
+pass "whatweknow.sh DC01 folds DB + journal + scans across every historical IP"
+
+# Injection guard: a bogus arg with shell/SQL metachars is rejected, not run
+if bash eng-d/db/whatweknow.sh "DC01; rm -rf /" 2>/tmp/wwk.err; then
+    fail "whatweknow.sh should reject an arg with invalid characters"
+fi
+grep -q "invalid host" /tmp/wwk.err || fail "stderr should explain the invalid-host rejection"
+pass "whatweknow.sh rejects args outside the host charset"
+rm -f /tmp/wwk.err
+
+# Regression (Task 4 review): a large scan file must not abort the dossier via
+# grep|head SIGPIPE under pipefail, and a leading-dash token (host name/dns are
+# free TEXT) must not be misparsed as a grep option. Both truncated/aborted the
+# dossier before the `--` and `|| true` fixes.
+cd "$TMP"
+rm -rf eng-d2
+bash "$NEWPT" none eng-d2 >/dev/null || fail "scaffold eng-d2 failed"
+db="eng-d2/db/engagement.db"
+sqlite3 "$db" "INSERT INTO host (name, dns) VALUES ('DC01', '-weird.corp');"
+sqlite3 "$db" "INSERT INTO host_ip (host_id, ip, current) VALUES (1, '10.0.0.5', 1);"
+mkdir -p eng-d2/scans/nmap
+seq 1 5000 | sed 's/^/10.0.0.5 port /' > eng-d2/scans/nmap/big.txt   # >64KB of matching lines
+out2="$(bash eng-d2/db/whatweknow.sh DC01)" || fail "whatweknow.sh aborted on a large scan file / leading-dash token"
+echo "$out2" | grep -q "RAW SCANS" || fail "dossier should still reach the RAW SCANS section"
+pass "whatweknow.sh survives large scan files and leading-dash tokens"
+
 echo "All tests passed."
