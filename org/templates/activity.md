@@ -2,17 +2,29 @@
 
 > Per-finding write-ups live in `findings/<finding_slug>.md`. This file is the index plus the executive narrative for the deliverable.
 
+## Host inventory
+
+Source of truth: `db/engagement.db` (`host` + `host_ip` + `host_segment`). The DHCP-stable name↔IP map — rendered by `bash db/render.sh`. See `AGENT.md` § Engagement database.
+
+<!-- db:render hosts -->
+
+| name | dns | mac | current ip | past ips | segment |
+| ---- | --- | --- | ---------- | -------- | ------- |
+|      |     |     |            |          |         |
+
+<!-- /db:render hosts -->
+
 ## Asset inventory
 
-Source of truth: `db/engagement.db` (`asset` + `asset_segment`). Rendered by `bash db/render.sh` — see `AGENT.md` § Engagement database for write/read snippets.
+Source of truth: `db/engagement.db` (`asset` + `host` + `host_segment`). Rendered by `bash db/render.sh` — see `AGENT.md` § Engagement database for write/read snippets.
 
 <!-- db:render assets -->
 
 ### <segment>
 
-| ip / hostname | port | protocol | tls | version | technologies | access |
-| ------------- | ---- | -------- | --- | ------- | ------------ | ------ |
-|               |      |          |     |         |              |        |
+| name | current ip | port | protocol | tls | version | technologies | access |
+| ---- | ---------- | ---- | -------- | --- | ------- | ------------ | ------ |
+|      |            |      |          |     |         |              |        |
 
 <!-- /db:render assets -->
 
@@ -24,9 +36,9 @@ Source of truth: `db/engagement.db` (`credential` + `credential_asset`). Rendere
 
 <!-- db:render credentials -->
 
-| Username | Password / Hash | IP / Hostname | Port | Role |
-| -------- | --------------- | ------------- | ---- | ---- |
-|          |                 |               |      |      |
+| Username | Password / Hash | Host | Current IP | Port | Role |
+| -------- | --------------- | ---- | ---------- | ---- | ---- |
+|          |                 |      |            |      |      |
 
 <!-- /db:render credentials -->
 

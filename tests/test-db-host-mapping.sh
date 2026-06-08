@@ -179,4 +179,33 @@ out2="$(bash eng-d2/db/whatweknow.sh DC01)" || fail "whatweknow.sh aborted on a 
 echo "$out2" | grep -q "RAW SCANS" || fail "dossier should still reach the RAW SCANS section"
 pass "whatweknow.sh survives large scan files and leading-dash tokens"
 
+# ===========================================================================
+# Section E — render.sh emits the hosts map + host-keyed asset/cred tables (Task 5)
+# ===========================================================================
+cd "$TMP"
+rm -rf eng-e
+bash "$NEWPT" none eng-e >/dev/null || fail "scaffold eng-e failed"
+db="eng-e/db/engagement.db"
+sqlite3 "$db" "INSERT INTO segment (name) VALUES ('server');"
+sqlite3 "$db" "INSERT INTO host (name, dns) VALUES ('DC01','dc01.corp.local');"
+sqlite3 "$db" "INSERT INTO host_ip (host_id, ip, current) VALUES (1,'10.0.0.5',0);"
+sqlite3 "$db" "INSERT INTO host_ip (host_id, ip, current) VALUES (1,'10.0.0.9',1);"
+sqlite3 "$db" "INSERT INTO host_segment (host_id, segment_id) VALUES (1,1);"
+sqlite3 "$db" "INSERT INTO asset (host_id, port, protocol) VALUES (1,445,'smb');"
+sqlite3 "$db" "INSERT INTO credential (username, secret, secret_type) VALUES ('admin','x','password');"
+sqlite3 "$db" "INSERT INTO credential_asset (credential_id, asset_id, verified_at) VALUES (1,1,CURRENT_TIMESTAMP);"
+
+bash eng-e/db/render.sh >/dev/null || fail "render.sh failed"
+md="eng-e/eng-e.md"
+# hosts map block rendered with name, current + past IP
+awk '/<!-- db:render hosts -->/{f=1} f; /<!-- \/db:render hosts -->/{f=0}' "$md" > "$TMP/hosts.block"
+grep -q "DC01"     "$TMP/hosts.block" || fail "hosts block should list DC01"
+grep -q "10.0.0.9" "$TMP/hosts.block" || fail "hosts block should show current IP"
+grep -q "10.0.0.5" "$TMP/hosts.block" || fail "hosts block should show past IP"
+# assets block keyed by host name + current IP
+awk '/<!-- db:render assets -->/{f=1} f; /<!-- \/db:render assets -->/{f=0}' "$md" > "$TMP/assets.block"
+grep -q "DC01" "$TMP/assets.block" || fail "assets block should show host name DC01"
+grep -q "445"  "$TMP/assets.block" || fail "assets block should list port 445"
+pass "render.sh emits hosts map + host-keyed asset table"
+
 echo "All tests passed."

@@ -44,10 +44,28 @@ trap 'rm -rf "$tmpdir"' EXIT
 # Build the three rendered blocks as standalone files under $tmpdir.
 # ---------------------------------------------------------------------------
 
+hosts_md="$tmpdir/hosts.md"
+echo "" > "$hosts_md"
+sqlite3 "$db" -markdown <<'SQL' >> "$hosts_md"
+SELECT h.name AS "name",
+       COALESCE(h.dns, '') AS "dns",
+       COALESCE(h.mac, '') AS "mac",
+       COALESCE((SELECT ip FROM host_ip WHERE host_id = h.id AND current = 1), '') AS "current ip",
+       COALESCE((SELECT GROUP_CONCAT(ip, ', ') FROM host_ip WHERE host_id = h.id AND current = 0), '') AS "past ips",
+       COALESCE((SELECT GROUP_CONCAT(s.name, ', ')
+                 FROM host_segment hs JOIN segment s ON s.id = hs.segment_id
+                 WHERE hs.host_id = h.id), '') AS "segment"
+FROM host h
+ORDER BY h.name;
+SQL
+echo "" >> "$hosts_md"
+[ "$(sqlite3 "$db" "SELECT COUNT(*) FROM host;")" -gt 0 ] || \
+    printf '\n_No hosts recorded yet — see AGENT.md § Engagement database for write snippets._\n' > "$hosts_md"
+
 assets_md="$tmpdir/assets.md"
 : > "$assets_md"
-# One sub-table per segment that has at least one asset.
-sqlite3 "$db" "SELECT name FROM segment WHERE id IN (SELECT segment_id FROM asset_segment) ORDER BY name;" |
+# One sub-table per segment that has at least one asset (via host_segment).
+sqlite3 "$db" "SELECT name FROM segment WHERE id IN (SELECT segment_id FROM host_segment) ORDER BY name;" |
 while IFS= read -r seg; do
     [ -z "$seg" ] && continue
     {
@@ -55,7 +73,8 @@ while IFS= read -r seg; do
         echo "### $seg"
         echo ""
         sqlite3 "$db" -markdown <<SQL
-SELECT a.host AS "ip / hostname",
+SELECT h.name AS "name",
+       COALESCE((SELECT ip FROM host_ip WHERE host_id = h.id AND current = 1), '') AS "current ip",
        a.port AS port,
        COALESCE(a.protocol, '') AS protocol,
        CASE a.tls WHEN 1 THEN 'True' WHEN 0 THEN 'False' ELSE '' END AS tls,
@@ -63,10 +82,11 @@ SELECT a.host AS "ip / hostname",
        COALESCE(a.technologies, '') AS technologies,
        COALESCE(a.access, '') AS access
 FROM asset a
-JOIN asset_segment ass ON ass.asset_id = a.id
-JOIN segment s         ON s.id = ass.segment_id
+JOIN host h          ON h.id = a.host_id
+JOIN host_segment hs ON hs.host_id = h.id
+JOIN segment s       ON s.id = hs.segment_id
 WHERE s.name = '$seg'
-ORDER BY a.host, a.port;
+ORDER BY h.name, a.port;
 SQL
     } >> "$assets_md"
 done
@@ -77,13 +97,15 @@ echo "" > "$credentials_md"
 sqlite3 "$db" -markdown <<'SQL' >> "$credentials_md"
 SELECT COALESCE(c.username, '') AS Username,
        COALESCE(c.secret, '')   AS "Password / Hash",
-       COALESCE(a.host, '')     AS "IP / Hostname",
+       COALESCE(h.name, '')     AS Host,
+       COALESCE((SELECT ip FROM host_ip WHERE host_id = h.id AND current = 1), '') AS "Current IP",
        COALESCE(a.port, '')     AS Port,
        COALESCE(c.role, '')     AS Role
 FROM credential c
 LEFT JOIN credential_asset ca ON ca.credential_id = c.id
 LEFT JOIN asset a              ON a.id = ca.asset_id
-ORDER BY c.username, a.host, a.port;
+LEFT JOIN host h               ON h.id = a.host_id
+ORDER BY c.username, h.name, a.port;
 SQL
 echo "" >> "$credentials_md"
 
@@ -131,6 +153,7 @@ replace_block() {
     ' "$target" > "$target.tmp" && mv "$target.tmp" "$target"
 }
 
+replace_block hosts       "$hosts_md"       "$activity_md"
 replace_block assets      "$assets_md"      "$activity_md"
 replace_block credentials "$credentials_md" "$activity_md"
 replace_block findings    "$findings_md"    "$activity_md"
