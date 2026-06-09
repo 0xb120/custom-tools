@@ -296,6 +296,8 @@ Host vs. service:
 
 A service row (`asset`) hangs off a machine (`host`) via `host_id`. The machine's `name` is its stable identity — provisional (= the IP) at discovery, renamed in place once DNS/NetBIOS resolves, keeping the same id. Every IP the machine has held lives in `host_ip` (`current=1` = the live lease, retired leases kept for history). Segment membership is on the machine (`host_segment`) and inherited by all its services. `UNIQUE(host_id, port)` replaces the old `UNIQUE(host, port)`.
 
+**Always target by name, not by IP.** When you scan, probe, or invoke any tool against a machine, use its hostname/DNS name whenever one is known; fall back to an IP **only** for a machine with no verbose name yet (and rename it the moment one resolves). Names are stable across DHCP — an IP-keyed command silently hits whatever machine currently holds that lease, which may no longer be your target. The same rule governs journal `@<tag>`s and `whatweknow.sh` lookups: prefer `@<name>` / `whatweknow.sh <name>`, IP only as a last resort.
+
 Column semantics:
 
 - `port` / `protocol` / `tls` — straight from the fingerprint (`httpx`, `fingerprintx`, `naabu` + probe). `tls` is `0` / `1`.

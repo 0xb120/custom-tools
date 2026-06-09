@@ -217,6 +217,7 @@ grep -qE "INSERT INTO host\b"     "$AGENT" || fail "AGENT.md should document INS
 grep -q "host_ip"                  "$AGENT" || fail "AGENT.md should document the host_ip ledger"
 grep -q "host_segment"             "$AGENT" || fail "AGENT.md should document host_segment"
 grep -q "whatweknow.sh"            "$AGENT" || fail "AGENT.md should keep the whatweknow.sh reference"
+grep -q "target by name"           "$AGENT" || fail "AGENT.md should tell the model to prefer name over IP for scans/invocations"
 pass "AGENT.md documents the host-identity model"
 
 # ===========================================================================
