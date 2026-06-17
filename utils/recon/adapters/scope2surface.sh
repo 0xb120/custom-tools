@@ -21,4 +21,4 @@ normalize_scope2surface() {   # run id
 }
 
 main() { local run; run="$(run_scope2surface "$1")"; normalize_scope2surface "$run"; }
-set +u; [ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"; set -u
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi
