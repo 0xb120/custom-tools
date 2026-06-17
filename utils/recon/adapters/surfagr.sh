@@ -30,7 +30,9 @@ normalize_surfagr() {   # run id  -- fan-out promoter, enforces stable app_id (Â
     [ -d "$d" ] || continue
     hosts="${d%/}/hosts.txt"
     # representative host: first non-IP URL, else first URL (mirrors pipeline-recon BEST_HOST)
-    best="$(grep -vE '^https?://([0-9]{1,3}\.){3}[0-9]{1,3}(:[0-9]+)?(/|$)' "$hosts" | head -n1)"
+    # `|| true`: under `set -o pipefail`, grep -v matching nothing (all-IP cluster)
+    # exits 1 and would abort the script before the fallback on the next line.
+    best="$(grep -vE '^https?://([0-9]{1,3}\.){3}[0-9]{1,3}(:[0-9]+)?(/|$)' "$hosts" | head -n1 || true)"
     [ -n "$best" ] || best="$(head -n1 "$hosts")"
     _parse_authority "$best"
     app_id="$(app_id_for "$REPL_HOST" "$REPL_PORT")"

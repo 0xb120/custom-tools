@@ -21,16 +21,26 @@ printf 'https://api.example.com:8443/\n' > "$raw/targets/api.example.com_8443_ap
 printf 'Title: API\nIP: 10.0.0.6\nWebserver: envoy\nTech Stack: None detected\nContent-Length: 0\nStatus-Code: 404\n' \
   > "$raw/targets/api.example.com_8443_api/info.txt"
 
+# Cluster 3: all-IP hosts -> exercises the "else first URL" fallback (must not abort)
+mkdir -p "$raw/targets/10.0.0.9_iponly"
+printf 'https://10.0.0.9/\nhttps://10.0.0.10/\n' > "$raw/targets/10.0.0.9_iponly/hosts.txt"
+printf 'Title: IP Only\nIP: 10.0.0.9\nWebserver: nginx\nTech Stack: None detected\nContent-Length: 5\nStatus-Code: 200\n' \
+  > "$raw/targets/10.0.0.9_iponly/info.txt"
+
 normalize_surfagr "$run"
 
 id1="$(app_id_for login.example.com 443)"
 id2="$(app_id_for api.example.com 8443)"
+id3="$(app_id_for 10.0.0.9 443)"
 
 assert_file_exists "$(meta_json "$id1")" "cluster 1 meta.json created at app_id dir"
 assert_file_exists "$(meta_json "$id2")" "cluster 2 meta.json created at app_id dir"
+assert_file_exists "$(meta_json "$id3")" "all-IP cluster falls back to first URL (no abort)"
 assert_eq "login.example.com" "$(jq -r .host "$(meta_json "$id1")")" "cluster 1 host parsed (domain over IP)"
 assert_eq "443"               "$(jq -r .port "$(meta_json "$id1")")" "cluster 1 default port"
 assert_eq "8443"              "$(jq -r .port "$(meta_json "$id2")")" "cluster 2 explicit port"
+assert_eq "10.0.0.9"          "$(jq -r .host "$(meta_json "$id3")")" "all-IP cluster host is first IP"
+assert_eq "443"               "$(jq -r .port "$(meta_json "$id3")")" "all-IP cluster default port"
 assert_eq "2"                 "$(jq '.cluster_hosts | length' "$(meta_json "$id1")")" "cluster 1 keeps all hosts"
 assert_eq "2"                 "$(jq '.tech | length' "$(meta_json "$id1")")" "cluster 1 tech split into array"
 assert_eq "0"                 "$(jq '.tech | length' "$(meta_json "$id2")")" "cluster 2 'None detected' -> empty array"
