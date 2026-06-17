@@ -23,5 +23,15 @@ assert_file_exists "$(app_dir "$app_id")/html/index.html" "html dir promoted"
 assert_contains "$(manifest_path "$app_id")" '"role":"endpoints"' "endpoints manifest row"
 assert_contains "$(manifest_path "$app_id")" '"role":"js_assets"' "js manifest row"
 assert_contains "$(manifest_path "$app_id")" '"role":"html_assets"' "html manifest row"
+
+# Idempotency: a second normalize must refresh the canonical js/ dir, not nest it.
+normalize_pipeline_recon "$app_id" "$run"
+assert_file_exists "$(app_dir "$app_id")/js/app.js" "js promoted (still flat after 2nd normalize)"
+if [ -d "$(app_dir "$app_id")/js/js" ]; then
+  echo "FAIL: js/ nested into js/js on second normalize"; ASSERT_FAILED=1
+else
+  echo "ok: js/ not nested after second normalize"
+fi
+
 rm -rf "$BASE"
 assert_summary
