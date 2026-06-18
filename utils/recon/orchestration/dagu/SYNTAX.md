@@ -9,6 +9,17 @@ engine derives the DAG name from the filename. Non-entrypoint (child) DAGs calle
 
 ---
 
+- **CONTINUE_ON**: step-level fault tolerance uses `continue_on:` (snake_case). `continueOn:` is
+  rejected by the parser with "use snake_case keys (continueOn -> continue_on)".
+
+  ```yaml
+  steps:
+    - name: optional-step
+      run: might-fail.sh
+      continue_on:
+        failure: true
+  ```
+
 - **COMMAND_FIELD**: `run:` (canonical; `command:` is accepted but deprecated)
 
   ```yaml

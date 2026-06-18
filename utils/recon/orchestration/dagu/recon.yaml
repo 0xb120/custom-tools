@@ -1,0 +1,49 @@
+params:
+  - BASE: ""
+  - SCOPE: ""
+  - ADAPTER_DIR: "utils/recon/adapters"
+  - LIB_DIR: "utils/recon/lib"
+  - APP_DAG: ""
+env:
+  - BASE: ${BASE}
+steps:
+  - name: scope2surface
+    run: bash ${ADAPTER_DIR}/scope2surface.sh ${SCOPE}
+  - name: takeover-scope
+    run: bash ${ADAPTER_DIR}/takeover-scope.sh
+    depends:
+      - scope2surface
+    continue_on:
+      failure: true
+  - name: surfagr
+    run: bash ${ADAPTER_DIR}/surfagr.sh
+    depends:
+      - scope2surface
+  - name: screenshotter
+    run: bash ${ADAPTER_DIR}/screenshotter.sh
+    depends:
+      - surfagr
+  - name: enumerate
+    run: bash -c 'source "${LIB_DIR}/paths.sh"; app_ids_json'
+    output: APP_IDS
+    depends:
+      - surfagr
+  - name: per-app
+    action: dag.run
+    with:
+      dag: ${APP_DAG}
+      params:
+        BASE: "${BASE}"
+        APP_ID: "${ITEM}"
+        ADAPTER_DIR: "${ADAPTER_DIR}"
+    parallel:
+      items: ${APP_IDS}
+      max_concurrent: 3
+    depends:
+      - enumerate
+  - name: done
+    run: "true"
+    depends:
+      - per-app
+      - takeover-scope
+      - screenshotter
