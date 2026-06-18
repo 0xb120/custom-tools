@@ -1,0 +1,16 @@
+params:
+  - BASE: ""
+  - APP_ID: ""
+  - ADAPTER_DIR: ""
+env:
+  - BASE: ${BASE}
+steps:
+  - name: recon
+    run: bash ${ADAPTER_DIR}/pipeline-recon.sh ${APP_ID}
+  - name: subenum
+    run: bash ${ADAPTER_DIR}/pipeline-subenum.sh ${APP_ID}
+  - name: takeover
+    run: bash ${ADAPTER_DIR}/takeover-discovered.sh ${APP_ID}
+    depends:
+      - recon
+      - subenum
