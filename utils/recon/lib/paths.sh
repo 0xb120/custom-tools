@@ -23,3 +23,7 @@ manifest_path()  {
 
 # common
 new_run()        { date -u +%Y%m%dT%H%M%SZ; }
+
+# workspace enumeration — single source of truth for "which app_ids exist"
+app_ids()      { for d in "$BASE"/targets/*/; do [ -d "$d" ] && basename "$d"; done; }
+app_ids_json() { app_ids | jq -R . | jq -s -c .; }   # ["id1","id2"]  (or []  when empty)
