@@ -17,19 +17,17 @@ and uses `continueOn: failure`. Retries are disabled (live infra).
 
 ## How it talks to the contract
 
-Dagu writes no artifact paths. It passes only `BASE`, `ADAPTER_DIR`, `LIB_DIR`, `SCOPE`;
+Dagu writes no artifact paths. It passes only `BASE`, `ADAPTER_DIR`, `LIB_DIR`, `SCOPE`, `APP_DAG`;
 every path resolves inside the adapters via `lib/paths.sh`. The app_id list comes from
 `app_ids_json` (single source of truth), not a glob.
 
 ## Run
 
 ```bash
-dagu start utils/recon/orchestration/dagu/recon.yaml -- \
-  BASE=/scans/acme SCOPE=/path/scope.txt \
-  APP_DAG=$(pwd)/utils/recon/orchestration/dagu/app.yaml
+dagu start utils/recon/orchestration/dagu/recon.yaml -- BASE=/scans/acme SCOPE=/path/scope.txt
 ```
 
-`ADAPTER_DIR` defaults to `utils/recon/adapters` and `LIB_DIR` to `utils/recon/lib`. `APP_DAG` is the absolute path to the child DAG `app.yaml` and must be supplied (the parent invokes it via `with.dag`).
+Defaults (`ADAPTER_DIR`, `LIB_DIR`, `APP_DAG`) assume the standard `/opt/custom-tools` install; pass them explicitly (absolute paths) if the toolkit lives elsewhere — Dagu runs steps in a private work dir, so relative paths will not resolve.
 
 ## Tests (offline, no live tools/network)
 

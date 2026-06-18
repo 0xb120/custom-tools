@@ -1,9 +1,9 @@
 params:
   - BASE: ""
   - SCOPE: ""
-  - ADAPTER_DIR: "utils/recon/adapters"
-  - LIB_DIR: "utils/recon/lib"
-  - APP_DAG: ""
+  - ADAPTER_DIR: "/opt/custom-tools/utils/recon/adapters"
+  - LIB_DIR: "/opt/custom-tools/utils/recon/lib"
+  - APP_DAG: "/opt/custom-tools/utils/recon/orchestration/dagu/app.yaml"
 env:
   - BASE: ${BASE}
 steps:
