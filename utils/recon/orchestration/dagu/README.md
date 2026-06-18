@@ -25,10 +25,11 @@ every path resolves inside the adapters via `lib/paths.sh`. The app_id list come
 
 ```bash
 dagu start utils/recon/orchestration/dagu/recon.yaml -- \
-  BASE=/scans/acme SCOPE=/path/scope.txt
+  BASE=/scans/acme SCOPE=/path/scope.txt \
+  APP_DAG=$(pwd)/utils/recon/orchestration/dagu/app.yaml
 ```
 
-`ADAPTER_DIR` defaults to `utils/recon/adapters` and `LIB_DIR` to `utils/recon/lib`.
+`ADAPTER_DIR` defaults to `utils/recon/adapters` and `LIB_DIR` to `utils/recon/lib`. `APP_DAG` is the absolute path to the child DAG `app.yaml` and must be supplied (the parent invokes it via `with.dag`).
 
 ## Tests (offline, no live tools/network)
 
