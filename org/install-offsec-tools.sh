@@ -570,6 +570,9 @@ install_recon() {
 
     echo "[+] Installing recon tools..."
     go install -v github.com/lc/gau/v2/cmd/gau@latest
+    # crawley (s0rg) — fast unix-way web crawler; alternative/complement to katana
+    # for endpoint discovery, emits one URL per line for piping into the pipeline.
+    go install -v github.com/s0rg/crawley/cmd/crawley@latest
     go install -v github.com/Chocapikk/wpprobe@latest
     wpprobe update-db
 
