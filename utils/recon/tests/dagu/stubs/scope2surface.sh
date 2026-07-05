@@ -10,3 +10,9 @@ cat > "$(httpx_meta)" <<'JSON'
 JSON
 manifest_append _surface subdomains subdomains.txt stub-scope2surface stub
 manifest_append _surface httpx_meta httpx_full_metadata.jsonl stub-scope2surface stub
+# Mirror the adapter's scope-expansion promotion into scope/ (operator-facing, no manifest rows).
+mkdir -p "$(scope_dir)"
+printf 'example.com\n'                         > "$(scope_file scope_init)"
+printf 'https://a.example.com\n'               > "$(scope_file scope_urls)"
+printf 'a.example.com\nb.example.com\n'        > "$(scope_file scope_dns)"
+printf '10.0.0.1\n10.0.0.2\n'                  > "$(scope_file scope_ip)"

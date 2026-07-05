@@ -3,9 +3,9 @@ set -euo pipefail
 LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../lib" && pwd)"
 source "$LIB/paths.sh"; source "$LIB/manifest.sh"
 found=0
-for m in "$BASE"/targets/*/meta.json; do
-  [ -e "$m" ] || continue
-  found=1; app_id="$(jq -r .app_id "$m")"
+for app_id in $(app_ids); do
+  [ -f "$(meta_json "$app_id")" ] || continue
+  found=1
   printf 'PNG' > "$(screenshot "$app_id")"
   manifest_append "$app_id" screenshot screenshot.png stub-screenshotter stub
 done

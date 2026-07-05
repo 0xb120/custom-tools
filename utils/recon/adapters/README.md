@@ -23,15 +23,21 @@ and call `normalize_` against fixtures.
 ## Invocation order (what the reproductions will wire up)
 
 ```
-scope2surface        -> att_surface/{subdomains.txt, httpx_full_metadata.jsonl}
-surfagr   (promoter) -> targets/<app_id>/meta.json            # enforces stable app_id
-screenshotter        -> targets/<app_id>/screenshot.png
-takeover-scope       -> att_surface/findings/takeovers_scope.jsonl   # stage 1 (parallel)
+scope2surface        -> scans/{subdomains.txt, httpx_full_metadata.jsonl}
+                        + scope/{scope_init,scope_urls,scope_dns,scope_ip}.txt
+surfagr   (promoter) -> scans/<app_id>/meta.json              # enforces stable app_id
+screenshotter        -> scans/<app_id>/screenshot.png
+takeover-scope       -> scans/findings/takeovers_scope.jsonl         # stage 1 (parallel)
 per app_id:
-  pipeline-recon     -> targets/<app_id>/{endpoints.txt, js/, html/}
-  pipeline-subenum   -> targets/<app_id>/subs.txt
-  takeover-discovered-> targets/<app_id>/findings/takeover.txt        # stage 2
+  pipeline-recon     -> scans/<app_id>/{endpoints.txt, js/, html/}
+  pipeline-subenum   -> scans/<app_id>/subs.txt
+  takeover-discovered-> scans/<app_id>/findings/takeover.txt          # stage 2
 ```
+
+Scope-level surface artifacts and the per-target workspaces are siblings under `scans/`;
+a per-target dir is keyed by the 12-hex `app_id`, so the surface-level `raw/` and
+`findings/` dirs are never mistaken for targets. See [`../lib/paths.sh`](../lib/paths.sh)
+for the full engagement layout.
 
 ## Required env
 

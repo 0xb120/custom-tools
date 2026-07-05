@@ -19,7 +19,7 @@ These apply to EVERY task. Values copied verbatim from `docs/superpowers/specs/2
 - Workspaces are keyed on `app_id`, never on host/title. `app_id = sha1("<host>:<port>") | cut -c1-12`, where `<host>` is the DNS hostname of the cluster's representative (best) host â€” not the IP, not the title.
 - `<run>` id format: `date -u +%Y%m%dT%H%M%SZ`. Manifest `ts` format: `date -u +%Y-%m-%dT%H:%M:%SZ`.
 - Manifest `path` is RELATIVE to the workspace; manifest `input` is a free-form provenance string.
-- Adapters are sourceable: define functions, and only run `main` when executed directly (`[ "${BASH_SOURCE[0]}" = "$0" ]` guard), so tests can source them and call `normalize_` directly.
+- Adapters are sourceable: define functions, and only run `main` when executed directly, using the guard `if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi`, so tests can source them and call `normalize_` directly. (Use the `if/then/fi` form, NOT `[ â€¦ ] && main "$@"`: the `&&` form returns exit 1 when the file is sourced, and since `set -euo pipefail` at the top of the adapter leaks into the sourcing test shell, that nonzero return aborts the test before any assertion runs. The `if` form returns 0 when sourced.)
 - `BASE` (engagement root) is read from the environment; never hardcoded.
 - Tests run fully offline â€” no network, no live customer traffic.
 
@@ -420,7 +420,7 @@ normalize_scope2surface() {   # run id
 }
 
 main() { local run; run="$(run_scope2surface "$1")"; normalize_scope2surface "$run"; }
-[ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -533,7 +533,9 @@ normalize_surfagr() {   # run id  -- fan-out promoter, enforces stable app_id (Â
     [ -d "$d" ] || continue
     hosts="${d%/}/hosts.txt"
     # representative host: first non-IP URL, else first URL (mirrors pipeline-recon BEST_HOST)
-    best="$(grep -vE '^https?://([0-9]{1,3}\.){3}[0-9]{1,3}(:[0-9]+)?(/|$)' "$hosts" | head -n1)"
+    # `|| true`: under `set -o pipefail`, grep -v matching nothing (all-IP cluster)
+    # exits 1 and would abort the script before the fallback on the next line.
+    best="$(grep -vE '^https?://([0-9]{1,3}\.){3}[0-9]{1,3}(:[0-9]+)?(/|$)' "$hosts" | head -n1 || true)"
     [ -n "$best" ] || best="$(head -n1 "$hosts")"
     _parse_authority "$best"
     app_id="$(app_id_for "$REPL_HOST" "$REPL_PORT")"
@@ -558,7 +560,7 @@ normalize_surfagr() {   # run id  -- fan-out promoter, enforces stable app_id (Â
 }
 
 main() { local run; run="$(run_surfagr)"; normalize_surfagr "$run"; }
-[ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -654,7 +656,7 @@ normalize_screenshotter() {   # run id
 }
 
 main() { local run; run="$(run_screenshotter)"; normalize_screenshotter "$run"; }
-[ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -739,18 +741,21 @@ normalize_pipeline_recon() {   # app_id run
   local app_id run raw; app_id="$1"; run="$2"; raw="$(raw_dir "$app_id" pipeline-recon "$run")"
   cp "$raw/all_endpoints_clean.txt" "$(endpoints "$app_id")"
   manifest_append "$app_id" endpoints endpoints.txt "katana+gau+urlfinder" "raw/pipeline-recon/$run/all_endpoints_clean.txt"
+  # rm -rf before cp -r: canonical dir must reflect the latest run exactly (like the
+  # file `cp` overwrites endpoints.txt). Plain `cp -r src dst` would nest as dst/js/js
+  # when dst already exists from a prior run.
   if [ -d "$raw/js" ]; then
-    cp -r "$raw/js" "$(app_dir "$app_id")/js"
+    rm -rf "$(app_dir "$app_id")/js"; cp -r "$raw/js" "$(app_dir "$app_id")/js"
     manifest_append "$app_id" js_assets js run-downloader "raw/pipeline-recon/$run/js/"
   fi
   if [ -d "$raw/html" ]; then
-    cp -r "$raw/html" "$(app_dir "$app_id")/html"
+    rm -rf "$(app_dir "$app_id")/html"; cp -r "$raw/html" "$(app_dir "$app_id")/html"
     manifest_append "$app_id" html_assets html run-downloader "raw/pipeline-recon/$run/html/"
   fi
 }
 
 main() { local run; run="$(run_pipeline_recon "$1")"; normalize_pipeline_recon "$1" "$run"; }
-[ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -832,7 +837,7 @@ normalize_pipeline_subenum() {   # app_id run
 }
 
 main() { local run; run="$(run_pipeline_subenum "$1")"; normalize_pipeline_subenum "$1" "$run"; }
-[ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -917,7 +922,7 @@ normalize_takeover_scope() {   # run id
 }
 
 main() { local run; run="$(run_takeover_scope)"; normalize_takeover_scope "$run"; }
-[ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -1001,7 +1006,7 @@ normalize_takeover_discovered() {   # app_id run
 }
 
 main() { local run; run="$(run_takeover_discovered "$1")"; normalize_takeover_discovered "$1" "$run"; }
-[ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi
 ```
 
 - [ ] **Step 4: Run test to verify it passes**

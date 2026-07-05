@@ -523,6 +523,15 @@ install_sast() {
     as_user pipx install semgrep
     go install -v github.com/BishopFox/jsluice/cmd/jsluice@latest
 
+    # Secret-scanning fleet — ptflow's content_discovery runs these ∥ over the downloaded response
+    # corpus, then merges/dedups the hits: jsluice (above, JS AST) + gitleaks (regex, ANY file, so it
+    # catches secrets in HTML/inline scripts jsluice's .js-only view misses) + trufflehog
+    # (provider-verified, near-zero FP) + detect-secrets (entropy). The two Go tools land in $GOBIN
+    # (~/go/bin); detect-secrets is a pipx CLI (~/.local/bin) like the other Python tools.
+    go install -v github.com/gitleaks/gitleaks/v8@latest
+    go install -v github.com/trufflesecurity/trufflehog/v3@latest
+    as_user pipx install detect-secrets
+
     clone_if_missing https://github.com/semgrep/semgrep-rules "$INSTALL_DIR/semgrep-rules"
 
     if [ ! -d "$INSTALL_DIR/codeql" ]; then
@@ -555,7 +564,36 @@ install_dast() {
 
     as_user pipx install wapiti3
 
+    # shortscan + shortutil (IIS/ASP.NET 8.3 short-name enumeration — ptflow tech_enum). shortutil
+    # builds the rainbow table shortscan resolves leaked 8.3 names against, so ptflow needs BOTH
+    # (same repo, sibling cmd/); installing only shortscan leaves the enum half-wired.
     go install -v github.com/bitquark/shortscan/cmd/shortscan@latest
+    go install -v github.com/bitquark/shortscan/cmd/shortutil@latest
+
+    # dalfox (XSS) — ptflow's dedicated scanner over the request catalog's raw requests, run ∥ sqlmap.
+    go install -v github.com/hahwul/dalfox/v2@latest
+
+    # Hidden-parameter discovery fleet (ptflow param_fuzz, PHASE 4): arjun (pipx → ~/.local/bin) ∥ x8.
+    # x8 has no recent crates.io build the distro cargo can compile, so ptflow expects the PREBUILT
+    # release binary in ~/.cargo/bin — drop the gzipped asset there directly (no Rust toolchain needed).
+    as_user pipx install arjun
+
+    local x8_dir="$TARGET_HOME/.cargo/bin"
+    if [ ! -x "$x8_dir/x8" ]; then
+        echo "[+] Installing x8 (Sh1Yo, prebuilt — distro cargo too old to compile)..."
+        as_user mkdir -p "$x8_dir"
+        local tmp_x8
+        tmp_x8="$(mktemp -d)"
+        curl $CURL_INSECURE -sSL \
+            https://github.com/Sh1Yo/x8/releases/latest/download/x86_64-linux-x8.gz \
+            -o "$tmp_x8/x8.gz"
+        gunzip "$tmp_x8/x8.gz"
+        install -m 0755 "$tmp_x8/x8" "$x8_dir/x8"
+        chown "$TARGET_USER:$(id -gn "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")" "$x8_dir/x8"
+        rm -rf "$tmp_x8"
+    else
+        echo "[=] x8 already installed at $x8_dir/x8 — skipping"
+    fi
 }
 
 install_recon() {
@@ -593,6 +631,19 @@ install_recon() {
     # phase as search_vulns and wpprobe (read-only DB grep, not active RT).
     clone_if_missing https://gitlab.com/exploit-database/exploitdb.git "$INSTALL_DIR/exploitdb"
     sudo ln -sf "$INSTALL_DIR/exploitdb/searchsploit" /usr/local/bin/searchsploit
+
+    # EyeWitness (OPTIONAL — web screenshots + default-cred signatures for ptflow's screenshot step).
+    # Not a PATH binary but a Selenium app: ptflow resolves it as <dir>/.venv/bin/python
+    # <dir>/Python/EyeWitness.py with <dir> hardcoded to /opt/EyeWitness, so clone under $INSTALL_DIR
+    # (= /opt in the standard layout, same as sqlmap-dev) and give it a self-contained venv. Chromium
+    # comes from install_base; selenium >=4.45 lets Selenium Manager auto-provision chromedriver
+    # headless (no Xvfb/sudo). Best-effort: a venv/pip failure must not abort the whole toolkit install.
+    clone_if_missing https://github.com/RedSiege/EyeWitness "$INSTALL_DIR/EyeWitness"
+    if [ ! -d "$INSTALL_DIR/EyeWitness/.venv" ]; then
+        python3 -m venv "$INSTALL_DIR/EyeWitness/.venv" \
+            && "$INSTALL_DIR/EyeWitness/.venv/bin/pip" install --upgrade pip selenium \
+            || echo "[!] EyeWitness venv/selenium setup failed — ptflow screenshot step will skip it"
+    fi
 }
 
 install_RT(){
@@ -636,6 +687,49 @@ install_RT(){
     sudo gem install --no-document evil-winrm
 
     sudo apt install -y proxychains4 smbmap smbclient nfs-common sshuttle
+
+    # Tunneling / OOB infra — expose local listeners through NAT for callback
+    # capture, webhook/OOB testing, and payload hosting during engagements.
+    # Both ship as single static binaries; drop them straight into
+    # /usr/local/bin rather than adding an apt repo, so the install stays
+    # distro-portable (Kali/Parrot/derivatives) and honours --insecure.
+    local tun_arch
+    case "$(uname -m)" in
+        x86_64)        tun_arch="amd64" ;;
+        aarch64|arm64) tun_arch="arm64" ;;
+        *) tun_arch=""; echo "[!] unsupported arch $(uname -m) — skipping ngrok/cloudflared" ;;
+    esac
+
+    if [ -n "$tun_arch" ]; then
+        # cloudflared — Cloudflare Tunnel. Releases publish a raw per-arch binary.
+        if command -v cloudflared >/dev/null 2>&1; then
+            echo "[=] cloudflared already installed: $(cloudflared --version 2>/dev/null) — skipping"
+        else
+            echo "[+] Installing cloudflared (Cloudflare Tunnel)..."
+            local tmp_cf
+            tmp_cf="$(mktemp)"
+            curl $CURL_INSECURE -fsSL \
+                "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${tun_arch}" \
+                -o "$tmp_cf"
+            sudo install -m 0755 "$tmp_cf" /usr/local/bin/cloudflared
+            rm -f "$tmp_cf"
+        fi
+
+        # ngrok — reverse tunnels. Stable v3 ships as a .tgz containing one binary.
+        if command -v ngrok >/dev/null 2>&1; then
+            echo "[=] ngrok already installed: $(ngrok --version 2>/dev/null) — skipping"
+        else
+            echo "[+] Installing ngrok..."
+            local tmp_ngrok
+            tmp_ngrok="$(mktemp -d)"
+            curl $CURL_INSECURE -fsSL \
+                "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-${tun_arch}.tgz" \
+                -o "$tmp_ngrok/ngrok.tgz"
+            tar -xzf "$tmp_ngrok/ngrok.tgz" -C "$tmp_ngrok"
+            sudo install -m 0755 "$tmp_ngrok/ngrok" /usr/local/bin/ngrok
+            rm -rf "$tmp_ngrok"
+        fi
+    fi
 }
 
 install_cloud() {

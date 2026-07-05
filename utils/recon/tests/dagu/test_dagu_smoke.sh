@@ -11,13 +11,20 @@ SCOPE="$DIR/fixtures/scope.txt"
 
 dagu start "$DAG" -- BASE="$BASE" SCOPE="$SCOPE" ADAPTER_DIR="$STUBS" LIB_DIR="$LIBD" APP_DAG="$(dirname "$DAG")/app.yaml"
 
+# scaffolding created by the recon DAG's scaffold step
+assert_file_exists "$BASE/scope.txt"    "smoke: scaffold copied scope.txt"
+for d in poc scope scans tmp wl logs; do
+  assert_file_exists "$BASE/$d"         "smoke: scaffold created $d/"
+done
 # scope-level artifacts
 assert_file_exists "$(subdomains)"      "smoke: subdomains promoted"
 assert_file_exists "$(httpx_meta)"      "smoke: httpx_meta promoted"
 assert_file_exists "$(scope_findings)"  "smoke: stage-1 takeover findings present"
+assert_file_exists "$(scope_file scope_init)" "smoke: scope_init promoted to scope/"
 # fan-out happened for both discovered app_ids
 assert_eq "2" "$(app_ids | wc -l | tr -d ' ')" "smoke: 2 app workspaces created"
 for id in $(app_ids); do
+  assert_eq "$BASE/scans/$id" "$(app_dir "$id")" "smoke: $id workspace lives under scans/"
   assert_file_exists "$(endpoints "$id")"  "smoke: endpoints for $id (recon ran)"
   assert_file_exists "$(subs "$id")"       "smoke: subs for $id (subenum ran)"
   assert_file_exists "$(screenshot "$id")" "smoke: screenshot for $id"

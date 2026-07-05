@@ -52,7 +52,7 @@ normalize_surfagr() {   # run id  -- fan-out promoter, enforces stable app_id (Â
       '{app_id:$app_id, host:$host, port:$port, base_url:$base_url, title:$title,
         host_ip:$ip, webserver:$webserver, status_code:$status,
         tech:$tech, cluster_hosts:$cluster_hosts}' > "$(meta_json "$app_id")"
-    manifest_append "$app_id" meta meta.json surfagr "att_surface/raw/surfagr/$run/targets/$(basename "${d%/}")/"
+    manifest_append "$app_id" meta meta.json surfagr "scans/raw/surfagr/$run/targets/$(basename "${d%/}")/"
   done
 }
 

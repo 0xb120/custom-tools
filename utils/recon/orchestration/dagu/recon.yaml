@@ -7,8 +7,12 @@ params:
 env:
   - BASE: ${BASE}
 steps:
+  - name: scaffold
+    run: bash -c 'mkdir -p "${BASE}/poc" "${BASE}/scope" "${BASE}/scans" "${BASE}/tmp" "${BASE}/wl" "${BASE}/logs"; cp "${SCOPE}" "${BASE}/scope.txt"'
   - name: scope2surface
     run: bash ${ADAPTER_DIR}/scope2surface.sh ${SCOPE}
+    depends:
+      - scaffold
   - name: takeover-scope
     run: bash ${ADAPTER_DIR}/takeover-scope.sh
     depends:

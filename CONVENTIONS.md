@@ -16,7 +16,7 @@ Each app workspace has a **fixed schema**, and raw tool output is kept separate 
 artifacts** that downstream steps consume:
 
 ```
-targets/<app_id>/
+scans/<app_id>/
   meta.json                    # identity: host, title, base_url, tech, cluster members
   raw/<tool>/<run>/...         # raw tool output, namespaced by tool — append-only, never overwritten
   endpoints.txt                # CANONICAL artifact: stable name, this is what the pipeline reads
@@ -37,7 +37,7 @@ follows:
 
 ```bash
 # lib/paths.sh — sourced by every worker
-app_dir()   { echo "$BASE/targets/$1"; }
+app_dir()   { echo "$BASE/scans/$1"; }
 endpoints() { echo "$(app_dir "$1")/endpoints.txt"; }
 subs()      { echo "$(app_dir "$1")/subs.txt"; }
 raw_dir()   { echo "$(app_dir "$1")/raw/$2"; }     # raw_dir <app_id> <tool>

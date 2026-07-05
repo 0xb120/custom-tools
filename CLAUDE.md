@@ -78,6 +78,7 @@ Creates: `attachments/`, `scans/`, `poc/`, `wl/`, `scope.txt`, and a Markdown no
 
 ## Script Conventions
 
+- **Output & workspace contract for new/modified workers: see [`CONVENTIONS.md`](CONVENTIONS.md).** It mandates the per-app workspace schema (canonical artifacts vs. `raw/<tool>/`), centralized paths (no hardcoded literals), a per-workspace `manifest.jsonl`, thin tool adapters, and a stable `app_id`. Existing scripts predate it — apply it when you touch them.
 - Most workers accept input via a positional arg **or** stdin — both forms are supported on `scope2surface.sh`, `run-passive-probe.sh`, `run-crawler.sh`, `run-downloader.sh`. Preserve that dual interface when editing.
 - Output dir is the **last** positional arg and defaults to `./<target>` or `./scans/...` — don't hardcode absolute paths.
 - Deduplication is done with `anew` or `sort -u`; reuse these rather than reinventing.

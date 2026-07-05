@@ -1,3 +1,7 @@
 # Secrets — master env file copied into every new engagement's .devcontainer/.env
 # by org/newPT.sh. Populate once, never commit.
 org/conf/devcontainer.env
+
+# Local tool binaries (e.g. the dagu orchestrator downloaded into .local/bin).
+# Large, machine-specific, and installed via org/install-offsec-tools.sh — never commit.
+.local/

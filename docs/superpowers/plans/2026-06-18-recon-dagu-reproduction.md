@@ -378,9 +378,13 @@ Expected: FAIL — `app.yaml` does not exist (dagu errors).
 
 - [ ] **Step 3: Write the child DAG** — `utils/recon/orchestration/dagu/app.yaml`
 
-Use the tokens confirmed in `SYNTAX.md`. The structure (adjust field spellings to match SYNTAX.md):
+Use the tokens confirmed in `SYNTAX.md` (Task 1). Confirmed facts that shape this file:
+the shell-command field is **`run:`** (not `command:`); and the file must have **NO `name:`
+field** — Task 1 found that a DAG passed to `dagu start` is rejected if it declares `name:`,
+and a child invoked via `with.dag: <path>` is located by PATH, not by name. So `app.yaml`
+omits `name:` (it works both as the Task-4 `dagu start` entrypoint and as the Task-5 child).
+
 ```yaml
-name: recon-app
 params:
   - BASE: ""
   - APP_ID: ""
@@ -389,15 +393,17 @@ env:
   - BASE: ${BASE}
 steps:
   - name: recon
-    command: bash ${ADAPTER_DIR}/pipeline-recon.sh ${APP_ID}
+    run: bash ${ADAPTER_DIR}/pipeline-recon.sh ${APP_ID}
   - name: subenum
-    command: bash ${ADAPTER_DIR}/pipeline-subenum.sh ${APP_ID}
+    run: bash ${ADAPTER_DIR}/pipeline-subenum.sh ${APP_ID}
   - name: takeover
-    command: bash ${ADAPTER_DIR}/takeover-discovered.sh ${APP_ID}
+    run: bash ${ADAPTER_DIR}/takeover-discovered.sh ${APP_ID}
     depends:
       - recon
       - subenum
 ```
+If `dagu` rejects any field, correct it per the installed binary (and fix `SYNTAX.md`); the
+Task-4 test is the oracle.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -464,48 +470,55 @@ Expected: FAIL — `recon.yaml` does not exist.
 
 - [ ] **Step 3: Write the parent DAG** — `utils/recon/orchestration/dagu/recon.yaml`
 
-Use the tokens confirmed in `SYNTAX.md` (especially child-DAG invocation and the parallel block). Structure:
+Use the tokens confirmed in `SYNTAX.md` (Task 1). Confirmed facts that shape this file:
+shell-command field is **`run:`**; this entrypoint DAG must have **NO `name:`** field;
+child-DAG invocation is **`action: dag.run`** with **`with.dag: <path>`** (located by PATH —
+so the child path is passed as the `APP_DAG` param, not referenced by a DAG name) and
+**`with.params`**; the parallel concurrency key is **`max_concurrent`** (snake_case); the
+current item is **`${ITEM}`**. Structure:
 ```yaml
-name: recon
 params:
   - BASE: ""
   - SCOPE: ""
   - ADAPTER_DIR: "utils/recon/adapters"
   - LIB_DIR: "utils/recon/lib"
+  - APP_DAG: ""          # absolute path to app.yaml (the child); passed by caller/test
 env:
   - BASE: ${BASE}
 steps:
   - name: scope2surface
-    command: bash ${ADAPTER_DIR}/scope2surface.sh ${SCOPE}
+    run: bash ${ADAPTER_DIR}/scope2surface.sh ${SCOPE}
   - name: takeover-scope
-    command: bash ${ADAPTER_DIR}/takeover-scope.sh
+    run: bash ${ADAPTER_DIR}/takeover-scope.sh
     depends:
       - scope2surface
     continueOn:
       failure: true
   - name: surfagr
-    command: bash ${ADAPTER_DIR}/surfagr.sh
+    run: bash ${ADAPTER_DIR}/surfagr.sh
     depends:
       - scope2surface
   - name: screenshotter
-    command: bash ${ADAPTER_DIR}/screenshotter.sh
+    run: bash ${ADAPTER_DIR}/screenshotter.sh
     depends:
       - surfagr
   - name: enumerate
-    command: bash -c 'source "${LIB_DIR}/paths.sh"; app_ids_json'
+    run: bash -c 'source "${LIB_DIR}/paths.sh"; app_ids_json'
     output: APP_IDS
     depends:
       - surfagr
   - name: per-app
-    run: recon-app
+    action: dag.run
+    with:
+      dag: ${APP_DAG}
+      params: "BASE=${BASE} APP_ID=${ITEM} ADAPTER_DIR=${ADAPTER_DIR}"
     parallel:
       items: ${APP_IDS}
-      maxConcurrent: 3
-    params: "BASE=${BASE} APP_ID=${ITEM} ADAPTER_DIR=${ADAPTER_DIR}"
+      max_concurrent: 3
     depends:
       - enumerate
   - name: done
-    command: "true"
+    run: "true"
     depends:
       - per-app
       - takeover-scope
@@ -513,9 +526,14 @@ steps:
 ```
 
 Notes for the implementer:
-- `enumerate` needs `$BASE` in its environment — it is set by the DAG-level `env`. `app_ids_json` requires `jq`.
-- The child DAG `recon-app` is defined in `app.yaml` (Task 4). If `SYNTAX.md` says the child is referenced by file path rather than name, use `run: ./app.yaml` (or the confirmed form) and ensure dagu resolves it relative to the parent DAG's directory.
-- `maxConcurrent` vs `max_concurrent`, `command` vs `run`, and `params`/`${ITEM}` must match `SYNTAX.md`. Correct the YAML to whatever the binary accepts; the smoke test is the oracle.
+- `enumerate` needs `$BASE` in its environment — set by the DAG-level `env`. `app_ids_json` requires `jq`.
+- `APP_DAG` is the absolute path to `app.yaml`; the smoke test (Step 1) passes it explicitly. If `SYNTAX.md`/the binary accept a relative `with.dag: ./app.yaml` resolved against the parent DAG's directory, you may default `APP_DAG` to that — but the test passing an absolute path must work regardless.
+- The exact `with.params` form (string `"K=V K=V"` vs a YAML map) and `continueOn` spelling must match what the binary accepts; correct the YAML if `dagu` rejects it. The smoke test is the oracle — iterate until green, keeping `SYNTAX.md` accurate.
+
+Also update the smoke test (Step 1) `dagu start` line to pass `APP_DAG`:
+```bash
+dagu start "$DAG" -- BASE="$BASE" SCOPE="$SCOPE" ADAPTER_DIR="$STUBS" LIB_DIR="$LIBD" APP_DAG="$(dirname "$DAG")/app.yaml"
+```
 
 - [ ] **Step 4: Run test to verify it passes**
 
