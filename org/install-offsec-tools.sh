@@ -435,7 +435,7 @@ install_docker() {
         echo "[=] Installed docker.io from $distro repos"
     else
         echo "[!] Could not install docker via apt on '$distro' — skipping Docker setup"
-        echo "[!] Install Docker manually if you need HExHTTP (uses docker build)"
+        echo "[!] Install Docker manually if you need container-based tooling later"
     fi
 }
 
@@ -559,8 +559,11 @@ install_dast() {
     )
     rm -rf "$tmp_ferox"
 
-    clone_if_missing https://github.com/c0dejump/HExHTTP.git "$INSTALL_DIR/HExHTTP"
-    sudo docker build -t hexhttp:latest "$INSTALL_DIR/HExHTTP"
+    # HExHTTP (HTTP header/response anomaly scanner). pyproject.toml exposes a
+    # `hexhttp` console script, so pipx installs it straight from git — no docker
+    # image, which couldn't be built here anyway (this script runs inside the
+    # devcontainer image build, where there's no docker daemon to talk to).
+    as_user pipx install git+https://github.com/c0dejump/HExHTTP.git
 
     as_user pipx install wapiti3
 
