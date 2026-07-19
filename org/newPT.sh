@@ -166,6 +166,15 @@ cp "$template_dir/hooks/"*.sh        "$activity_name/.claude/hooks/"
 cp "$template_dir/claude/hooks/"*.sh "$activity_name/.claude/hooks/"
 chmod +x "$activity_name/.claude/hooks/"*.sh
 
+# .codex/ — engagement-scoped Codex config (mirror of .claude/). config.toml
+# sets the bypass baseline; hooks.json wires the same SessionStart context
+# injection + Bash audit-log + DB-render hooks (report-format is Claude-only).
+mkdir -p "$activity_name/.codex/hooks"
+cp "$template_dir/codex/config.toml" "$activity_name/.codex/config.toml"
+cp "$template_dir/codex/hooks.json"  "$activity_name/.codex/hooks.json"
+cp "$template_dir/hooks/"*.sh        "$activity_name/.codex/hooks/"
+chmod +x "$activity_name/.codex/hooks/"*.sh
+
 cat <<EOF
 
 Structure for '$activity_name' created successfully.

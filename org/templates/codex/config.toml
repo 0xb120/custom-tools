@@ -1,0 +1,11 @@
+# Engagement-scoped Codex config — mirror of .claude/settings.json's
+# bypassPermissions. The devcontainer IS the security boundary, so run
+# sandbox-free with no approval prompts INSIDE it. Never use this outside the
+# disposable engagement container.
+approval_policy = "never"
+sandbox_mode   = "danger-full-access"
+
+# NOTE (known gap): the Claude-side PostToolUse(Write|Edit) report-prose format
+# check is not mirrored for Codex. Codex edits go through apply_patch (a patch
+# blob with no file_path), so that hook needs separate handling. Tracked in
+# docs/superpowers/specs/2026-07-19-codex-config-parity-design.md.

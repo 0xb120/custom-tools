@@ -126,6 +126,28 @@ for h in log-command render-after-db check-report-format; do
 done
 pass ".claude/hooks/ has all three hook scripts (shared + claude-only), executable"
 
+# --- Test 6c: .codex/ scaffolded (config.toml + hooks.json + shared hooks) ---
+test -f engagement-internal/.codex/config.toml || fail ".codex/config.toml missing"
+grep -q 'approval_policy *= *"never"'           engagement-internal/.codex/config.toml || \
+    fail ".codex/config.toml must set approval_policy = never"
+grep -q 'sandbox_mode *= *"danger-full-access"' engagement-internal/.codex/config.toml || \
+    fail ".codex/config.toml must set sandbox_mode = danger-full-access"
+
+test -f engagement-internal/.codex/hooks.json || fail ".codex/hooks.json missing"
+jq -e . engagement-internal/.codex/hooks.json >/dev/null || fail ".codex/hooks.json is not valid JSON"
+jq -e '.hooks.SessionStart and .hooks.PreToolUse and .hooks.PostToolUse' \
+    engagement-internal/.codex/hooks.json >/dev/null || \
+    fail ".codex/hooks.json must define SessionStart, PreToolUse, PostToolUse"
+grep -q 'check-report-format' engagement-internal/.codex/hooks.json && \
+    fail ".codex/hooks.json must NOT reference the Claude-only report-format hook"
+
+for h in log-command render-after-db; do
+    test -x "engagement-internal/.codex/hooks/$h.sh" || fail ".codex/hooks/$h.sh missing or not executable"
+    diff -q "engagement-internal/.codex/hooks/$h.sh" "engagement-internal/.claude/hooks/$h.sh" >/dev/null || \
+        fail "$h.sh differs between .codex/ and .claude/ (should be one shared source)"
+done
+pass ".codex/ scaffolded: config.toml + hooks.json (3 hooks, no report-format) + shared scripts"
+
 # --- Test 7: verbose post-scaffold output names type, groups, Dockerfile, next-step cmds ---
 cd "$TMP"
 rm -rf engagement-cloud

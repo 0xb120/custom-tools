@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '\\n--- AGENTS.md ---\\n'; cat /workspace/AGENTS.md; printf '\\n--- TODO.md ---\\n'; cat /workspace/TODO.md; printf '\\n--- journal.md (last 100 lines) ---\\n'; tail -n 100 /workspace/journal.md"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /workspace/.codex/hooks/log-command.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /workspace/.codex/hooks/render-after-db.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
