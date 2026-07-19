@@ -119,6 +119,13 @@ diff -q engagement-internal/.claude/settings.json \
     >/dev/null || fail ".claude/settings.json should be a verbatim copy of the template"
 pass ".claude/settings.json scaffolded verbatim from template"
 
+# --- Test 6b: .claude/hooks/ carries all three scripts, executable ---
+for h in log-command render-after-db check-report-format; do
+    test -x "engagement-internal/.claude/hooks/$h.sh" || \
+        fail ".claude/hooks/$h.sh missing or not executable"
+done
+pass ".claude/hooks/ has all three hook scripts (shared + claude-only), executable"
+
 # --- Test 7: verbose post-scaffold output names type, groups, Dockerfile, next-step cmds ---
 cd "$TMP"
 rm -rf engagement-cloud

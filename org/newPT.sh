@@ -160,6 +160,9 @@ cp "$template_dir/devcontainer/gitignore" "$activity_name/.devcontainer/.gitigno
 # (command audit log, DB→Markdown auto-render, report-prose formatting check).
 mkdir -p "$activity_name/.claude/hooks"
 cp "$template_dir/claude/settings.json" "$activity_name/.claude/settings.json"
+# Shared hooks (used by both Claude and Codex) live in templates/hooks/;
+# check-report-format.sh is Claude-only and stays under templates/claude/hooks/.
+cp "$template_dir/hooks/"*.sh        "$activity_name/.claude/hooks/"
 cp "$template_dir/claude/hooks/"*.sh "$activity_name/.claude/hooks/"
 chmod +x "$activity_name/.claude/hooks/"*.sh
 
