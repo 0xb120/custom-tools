@@ -174,5 +174,32 @@ echo "$render_out" | grep -q "SN2026_Example.md" || \
 if [ -e workspace/workspace.md ]; then fail "render.sh must not create/expect workspace.md"; fi
 pass "render.sh resolves <activity>.md by db:render marker even when root is /workspace"
 
+# --- Test 9: seed-codex-env.sh export copies the allowlist, gates the secret ---
+SEED="$(dirname "$SCRIPT")/seed-codex-env.sh"
+cd "$TMP"
+rm -rf fake-codex seed-out seed-out-creds
+mkdir -p fake-codex/plugins fake-codex/skills fake-codex/rules fake-codex/prompts fake-codex/sessions
+printf 'approval_policy = "on-request"\n' > fake-codex/config.toml
+printf '# global\n'                        > fake-codex/AGENTS.md
+printf '{"token":"secret"}\n'              > fake-codex/auth.json
+printf 'dummy\n'                           > fake-codex/history.jsonl
+
+# export WITHOUT credentials: allowlist copied, auth.json skipped, denylist skipped
+CODEX_HOME="$TMP/fake-codex" bash "$SEED" export "$TMP/seed-out" >/dev/null || fail "seed export failed"
+for item in config.toml plugins skills rules prompts AGENTS.md; do
+    test -e "seed-out/$item" || fail "seed export should copy allowlist item: $item"
+done
+test -e seed-out/auth.json     && fail "seed export must NOT copy auth.json without --with-credentials"
+test -e seed-out/history.jsonl && fail "seed export must NOT copy denylist item history.jsonl"
+test -e seed-out/sessions      && fail "seed export must NOT copy denylist dir sessions"
+pass "seed-codex-env.sh export copies allowlist, skips secret + state"
+
+# export WITH credentials: auth.json included, mode 600
+CODEX_HOME="$TMP/fake-codex" bash "$SEED" export "$TMP/seed-out-creds" --with-credentials >/dev/null || \
+    fail "seed export --with-credentials failed"
+test -e seed-out-creds/auth.json || fail "--with-credentials should copy auth.json"
+[ "$(stat -c '%a' seed-out-creds/auth.json)" = "600" ] || fail "auth.json should be chmod 600 in the seed"
+pass "seed-codex-env.sh --with-credentials includes auth.json (600)"
+
 rm -f /tmp/np.err
 echo "All tests passed."
