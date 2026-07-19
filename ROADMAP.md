@@ -28,9 +28,9 @@ Status legend: `idea` (needs design) · `ready` (design agreed, can build) · `i
 
 ---
 
-## 2. Codex configuration parity (mirror the Claude Code engagement setup)
+## 2. Codex configuration parity (mirror the Claude Code engagement setup) — ✅ done (see § Done)
 
-**Status:** `idea` · **Size:** M · **Area:** `org/templates/`, `org/newPT.sh`
+**Status:** `done` · **Size:** M · **Area:** `org/templates/`, `org/newPT.sh`
 
 **Motivation.** `newPT.sh` already installs Codex (the `AI` install group: Codex, sgpt, Strix) and scaffolds a full Claude Code engagement config under `.claude/` — `settings.json` plus the three hooks (command audit log, DB→Markdown auto-render, report-prose format check) and the `SessionStart` context injection. An operator who drives the engagement with **Codex instead of Claude Code** gets none of those guardrails. Goal: bring Codex to feature parity so either agent enforces the same rules.
 
@@ -71,3 +71,15 @@ Shipped both pieces from the design, plus a third source we added during build:
 - **`whatweknow.sh`** (`org/templates/db/`) — wrapper folding **three** sources, not two: the DB view + `@host` journal grep + **raw `scans/` output mentioning the host**. The raw-scan source was added because the model doesn't always transcribe every banner / version / open port into the DB — those details survive only in the raw output, and a DB-only dossier would silently omit them. Copied into each engagement by `org/newPT.sh`. Host value is charset-guarded (`[A-Za-z0-9.:_-]`) before reaching the SQLite `.param` dot-command to close the quote-injection hole.
 
 **Deferred (open question #2):** the `SessionStart`-hook auto-surfacing of dossiers for `access IS NULL` hosts was left out to avoid context bloat — revisit if recall priming proves worth it.
+
+### 2. Codex configuration parity — `8db0db9`…`e6e0b61`
+
+Research against `codex-cli 0.144.6` collapsed the design's biggest unknown: Codex ships a **stable, on-by-default hooks system** that is payload-compatible with Claude Code (`SessionStart`/`PreToolUse`/`PostToolUse`, `tool_input.command`, `cwd`, exit-2-blocks, stdout-as-context), so most of `.claude/` mirrors almost verbatim. `newPT.sh` now scaffolds `.codex/` beside `.claude/`:
+
+- **Shared hooks** — `log-command.sh` + `render-after-db.sh` moved to `org/templates/hooks/`, copied into both agents' `hooks/` dirs (one source, two consumers).
+- **`.codex/config.toml`** — `approval_policy="never"` + `sandbox_mode="danger-full-access"` (the `bypassPermissions` analog); **`.codex/hooks.json`** wires SessionStart context injection + Bash audit-log + DB-render.
+- **`seed-codex-env.sh`** + a `~/.codex` devcontainer bind-mount/seed, and **`yolo-codex.sh`** (`--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust`) — so `codex` runs in-container exactly like `claude`.
+
+Design + plan: `docs/superpowers/specs/2026-07-19-codex-config-parity-design.md`, `docs/superpowers/plans/2026-07-19-codex-config-parity.md`.
+
+**Deferred (one follow-up):** the report-prose format check (`check-report-format.sh`) stays Claude-only — Codex edits go through `apply_patch` (a patch blob, no `file_path`), so it needs a `PostToolUse(apply_patch)` or `Stop`-hook adaptation before it can mirror.
