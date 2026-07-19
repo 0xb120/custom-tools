@@ -209,16 +209,16 @@ grep -q "445"  "$TMP/assets.block" || fail "assets block should list port 445"
 pass "render.sh emits hosts map + host-keyed asset table"
 
 # ===========================================================================
-# Section F — AGENT.md docs describe the host model, not the dropped one (Task 6)
+# Section F — AGENTS.md docs describe the host model, not the dropped one (Task 6)
 # ===========================================================================
-AGENT="$ROOT/org/templates/AGENT.md"
-grep -q "asset_segment" "$AGENT" && fail "AGENT.md still references the removed asset_segment table"
-grep -qE "INSERT INTO host\b"     "$AGENT" || fail "AGENT.md should document INSERT INTO host"
-grep -q "host_ip"                  "$AGENT" || fail "AGENT.md should document the host_ip ledger"
-grep -q "host_segment"             "$AGENT" || fail "AGENT.md should document host_segment"
-grep -q "whatweknow.sh"            "$AGENT" || fail "AGENT.md should keep the whatweknow.sh reference"
-grep -q "target by name"           "$AGENT" || fail "AGENT.md should tell the model to prefer name over IP for scans/invocations"
-pass "AGENT.md documents the host-identity model"
+AGENT="$ROOT/org/templates/AGENTS.md"
+grep -q "asset_segment" "$AGENT" && fail "AGENTS.md still references the removed asset_segment table"
+grep -qE "INSERT INTO host\b"     "$AGENT" || fail "AGENTS.md should document INSERT INTO host"
+grep -q "host_ip"                  "$AGENT" || fail "AGENTS.md should document the host_ip ledger"
+grep -q "host_segment"             "$AGENT" || fail "AGENTS.md should document host_segment"
+grep -q "whatweknow.sh"            "$AGENT" || fail "AGENTS.md should keep the whatweknow.sh reference"
+grep -q "target by name"           "$AGENT" || fail "AGENTS.md should tell the model to prefer name over IP for scans/invocations"
+pass "AGENTS.md documents the host-identity model"
 
 # ===========================================================================
 # Section G — the documented "Common writes" snippets execute and link rows
@@ -228,14 +228,14 @@ pass "AGENT.md documents the host-identity model"
 cd "$TMP"
 rm -rf eng-g
 bash "$NEWPT" none eng-g >/dev/null || fail "scaffold eng-g failed"
-AGENT="$ROOT/org/templates/AGENT.md"
+AGENT="$ROOT/org/templates/AGENTS.md"
 # Extract the bash code fences in the "Common writes" subsection.
 awk '/\*\*Common writes\*\*/{insec=1}
      /\*\*Common reads\*\*/{insec=0}
      insec && /^```bash$/{inblk=1; next}
      insec && /^```$/{inblk=0}
      insec && inblk{print}' "$AGENT" > "$TMP/writes.sh"
-[ -s "$TMP/writes.sh" ] || fail "could not extract Common writes snippets from AGENT.md"
+[ -s "$TMP/writes.sh" ] || fail "could not extract Common writes snippets from AGENTS.md"
 ( cd eng-g && bash -e "$TMP/writes.sh" ) || fail "documented Common writes snippets errored when executed"
 gdb="eng-g/db/engagement.db"
 [ "$(sqlite3 "$gdb" "SELECT COUNT(*) FROM host_ip WHERE host_id NOT IN (SELECT id FROM host);")" = 0 ] \
@@ -246,6 +246,6 @@ gdb="eng-g/db/engagement.db"
     || fail "expected the documented DC01:445 asset to exist"
 [ "$(sqlite3 "$gdb" "SELECT COUNT(*) FROM credential_asset;")" -ge 1 ] \
     || fail "expected at least one credential linked to an asset"
-pass "AGENT.md Common writes snippets execute and link rows correctly (no last_insert_rowid orphans)"
+pass "AGENTS.md Common writes snippets execute and link rows correctly (no last_insert_rowid orphans)"
 
 echo "All tests passed."

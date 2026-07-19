@@ -4,7 +4,7 @@
 
 ## Host inventory
 
-Source of truth: `db/engagement.db` (`host` + `host_ip` + `host_segment`). The DHCP-stable name↔IP map — rendered by `bash db/render.sh`. See `AGENT.md` § Engagement database.
+Source of truth: `db/engagement.db` (`host` + `host_ip` + `host_segment`). The DHCP-stable name↔IP map — rendered by `bash db/render.sh`. See `AGENTS.md` § Engagement database.
 
 <!-- db:render hosts -->
 
@@ -16,7 +16,7 @@ Source of truth: `db/engagement.db` (`host` + `host_ip` + `host_segment`). The D
 
 ## Asset inventory
 
-Source of truth: `db/engagement.db` (`asset` + `host` + `host_segment`). Rendered by `bash db/render.sh` — see `AGENT.md` § Engagement database for write/read snippets.
+Source of truth: `db/engagement.db` (`asset` + `host` + `host_segment`). Rendered by `bash db/render.sh` — see `AGENTS.md` § Engagement database for write/read snippets.
 
 <!-- db:render assets -->
 

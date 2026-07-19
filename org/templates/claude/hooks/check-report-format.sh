@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # PostToolUse(Write|Edit) hook — enforce the "copy-paste-ready prose" rule from
-# AGENT.md (§ Prose formatting) on report files: report prose must never be
+# AGENTS.md (§ Prose formatting) on report files: report prose must never be
 # hard-wrapped mid-sentence. One paragraph = one continuous line; the renderer
 # wraps it. Hard newlines belong only between block elements.
 #
 # Scope: *.md under findings/ and the root-level <activity>.md (identified by
 # its db:render markers, not by name). Working files — journal.md, TODO.md,
-# AGENT.md, the _template.md / finding.md reference — are exempt.
+# AGENTS.md, the _template.md / finding.md reference — are exempt.
 #
 # Detection: a "hard-wrapped paragraph" is a run of 2+ consecutive lines that
 # are all flowing prose — i.e. with no blank line, heading, list marker, table
@@ -72,7 +72,7 @@ END { flush() }
     echo "Report-formatting violation in ${file}:"
     echo "$ranges"
     echo
-    echo "AGENT.md (§ Prose formatting): report prose must be copy-paste-ready and"
+    echo "AGENTS.md (§ Prose formatting): report prose must be copy-paste-ready and"
     echo "must NEVER be hard-wrapped mid-sentence. Rewrite each flagged paragraph as"
     echo "ONE continuous line — keep newlines only between paragraphs, list items,"
     echo "and table rows."

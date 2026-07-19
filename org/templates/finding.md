@@ -12,7 +12,7 @@ Reference template — copy to `findings/<finding_slug>.md` and fill in every fi
 - **Status**: `<open | fixed | non-reproducible>`
 - **Affected asset(s)**: `<host / URL / endpoint / parameter / binary — one per line if multiple>`
 - **Related CWE(s)**: `<CWE-NNN: short name>`
-- **Segment**: `<segment-name from AGENT.md>`
+- **Segment**: `<segment-name from AGENTS.md>`
 
 ## Impact
 

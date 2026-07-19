@@ -6,7 +6,7 @@ PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 
 -- ---------------------------------------------------------------------------
--- Segments (defined per engagement, see AGENT.md § Segments)
+-- Segments (defined per engagement, see AGENTS.md § Segments)
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS segment (
   id          INTEGER PRIMARY KEY,

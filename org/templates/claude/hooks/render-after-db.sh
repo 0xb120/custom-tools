@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PostToolUse(Bash) hook — keep the rendered Markdown tables in <activity>.md in
-# sync with db/engagement.db. AGENT.md requires `bash db/render.sh` after every
+# sync with db/engagement.db. AGENTS.md requires `bash db/render.sh` after every
 # INSERT/UPDATE; this hook runs it automatically so the index never drifts.
 #
 # Fires only when the command that just ran actually mutated the engagement DB

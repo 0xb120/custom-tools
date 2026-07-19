@@ -8,7 +8,7 @@ Status legend: `idea` (needs design) · `ready` (design agreed, can build) · `i
 
 ## 1. Host-indexed engagement memory — ✅ done (see § Done)
 
-**Status:** `done` · **Size:** S · **Area:** `org/templates/` (AGENT.md + a DB query/helper)
+**Status:** `done` · **Size:** S · **Area:** `org/templates/` (AGENTS.md + a DB query/helper)
 
 **Motivation.** When the LLM (or operator) resumes an engagement and asks *"what do we already know about `10.0.0.5`?"*, the answer today is scattered: structured columns in `db/engagement.db` (`asset`), free-text in `journal.md` (which is **chronological**, not host-indexed), and raw output under `scans/`. There is no host-centric view of prior analysis. We explicitly rejected "one note file per asset" — it fights the DB-as-source-of-truth model, drifts against the `asset`/`finding` tables, and a fragmented pile of files *hurts* LLM recall rather than helping it (more to read, more contradictions, not auto-loaded into context).
 
@@ -18,7 +18,7 @@ Status legend: `idea` (needs design) · `ready` (design agreed, can build) · `i
 2. **On-demand "what-do-we-know" view.** A small helper / saved query that, given a host, concatenates: (a) the `asset` row from the DB, (b) findings referencing that host (`finding` + `finding_asset`), (c) `grep '@<host>' journal.md`. This *is* the per-asset note — but generated from existing sources, never hand-maintained.
 
 **Files.**
-- `org/templates/AGENT.md` — document the `@host` tag in § Working journal.
+- `org/templates/AGENTS.md` — document the `@host` tag in § Working journal.
 - `org/templates/db/queries/` — add e.g. `host-dossier.sql` (DB side of the view).
 - Optional: `org/templates/db/whatweknow.sh` (or similar) joining the DB query + journal grep for a single host.
 
@@ -34,7 +34,7 @@ Status legend: `idea` (needs design) · `ready` (design agreed, can build) · `i
 
 **Motivation.** `newPT.sh` already installs Codex (the `AI` install group: Codex, sgpt, Strix) and scaffolds a full Claude Code engagement config under `.claude/` — `settings.json` plus the three hooks (command audit log, DB→Markdown auto-render, report-prose format check) and the `SessionStart` context injection. An operator who drives the engagement with **Codex instead of Claude Code** gets none of those guardrails. Goal: bring Codex to feature parity so either agent enforces the same rules.
 
-**Design (to be confirmed — depends on Codex's extensibility model).** Map each Claude Code mechanism to its Codex equivalent, then scaffold it from `newPT.sh` the same way `.claude/` is. Candidate target layout: `org/templates/codex/` mirroring `org/templates/claude/`, plus an `AGENTS.md` (Codex reads `AGENTS.md`, whereas the Claude pointer is `CLAUDE.md` → `AGENT.md`).
+**Design (to be confirmed — depends on Codex's extensibility model).** Map each Claude Code mechanism to its Codex equivalent, then scaffold it from `newPT.sh` the same way `.claude/` is. Candidate target layout: `org/templates/codex/` mirroring `org/templates/claude/`. Engagement rules already live in the canonical `AGENTS.md`, which Codex reads natively and the Claude pointer (`CLAUDE.md` → `AGENTS.md`) also targets — so both agents share one rules file with no extra scaffolding.
 
 | Claude Code mechanism | Codex equivalent (RESEARCH) |
 |-----------------------|------------------------------|
@@ -48,7 +48,7 @@ Status legend: `idea` (needs design) · `ready` (design agreed, can build) · `i
 - Does Codex CLI have lifecycle / tool-event hooks comparable to Claude Code's `PreToolUse`/`PostToolUse`/`SessionStart`? If the granular tool hooks don't exist, the audit-log / auto-render / format-check features have no direct home — decide between (a) a tool wrapper, (b) a post-hoc reconciliation pass, or (c) documenting the gap.
 - Where does per-project Codex config live, and how is it pinned per engagement (mirror the bind-mounted `/workspace` model)?
 - Reuse vs duplicate: the three hook scripts in `org/templates/claude/hooks/` are plain bash reading a JSON payload on stdin. If Codex passes a compatible payload, the scripts could be shared rather than forked — verify the payload schema before duplicating.
-- Single source of truth for engagement rules: keep one `AGENT.md` and have both `CLAUDE.md` and `AGENTS.md` point to it, to avoid two diverging rule files.
+- Single source of truth for engagement rules: the canonical file is now `AGENTS.md` (read directly by Codex), with `CLAUDE.md` as the only pointer to it — no second rule file to diverge.
 
 **Pre-work.** Confirm the Codex extensibility surface (config + hooks/notify) against current Codex CLI docs before committing to a layout.
 
@@ -66,7 +66,7 @@ Status legend: `idea` (needs design) · `ready` (design agreed, can build) · `i
 
 Shipped both pieces from the design, plus a third source we added during build:
 
-- **`@host` journal tag** — documented in `org/templates/AGENT.md` § Working journal alongside the existing `#tag` namespace. `grep '@10.0.0.5' journal.md` reconstructs a target's history.
+- **`@host` journal tag** — documented in `org/templates/AGENTS.md` § Working journal alongside the existing `#tag` namespace. `grep '@10.0.0.5' journal.md` reconstructs a target's history.
 - **`host-dossier.sql`** (`org/templates/db/queries/`) — DB-side view: assets / segments / credentials / findings for a bound `:host`.
 - **`whatweknow.sh`** (`org/templates/db/`) — wrapper folding **three** sources, not two: the DB view + `@host` journal grep + **raw `scans/` output mentioning the host**. The raw-scan source was added because the model doesn't always transcribe every banner / version / open port into the DB — those details survive only in the raw output, and a DB-only dossier would silently omit them. Copied into each engagement by `org/newPT.sh`. Host value is charset-guarded (`[A-Za-z0-9.:_-]`) before reaching the SQLite `.param` dot-command to close the quote-injection hole.
 

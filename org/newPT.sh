@@ -100,15 +100,15 @@ touch "$activity_name"/TODO.md
 cp "$template_dir/activity.md" "$activity_name"/"$activity_name".md
 sed -i "s|{{ACTIVITY_NAME}}|$activity_name|g" "$activity_name"/"$activity_name".md
 
-# Drop in the engagement-level AGENT.md (rules + scaffolding) and CLAUDE.md (pointer)
-cp "$template_dir/AGENT.md" "$activity_name"/AGENT.md
+# Drop in the engagement-level AGENTS.md (rules + scaffolding) and CLAUDE.md (pointer)
+cp "$template_dir/AGENTS.md" "$activity_name"/AGENTS.md
 cp "$template_dir/CLAUDE.md" "$activity_name"/CLAUDE.md
 
 # Per-finding reference template — operator copies to findings/<finding_slug>.md per issue
 cp "$template_dir/finding.md" "$activity_name"/findings/_template.md
 
 # Kickoff notes — operator pastes raw notes here; the LLM reads them at the
-# first session to auto-populate AGENT.md placeholders.
+# first session to auto-populate AGENTS.md placeholders.
 cp "$template_dir/_init_notes.txt" "$activity_name"/_init_notes.txt
 
 # Engagement SQLite DB: schema + render script + saved query snippets.
@@ -175,7 +175,7 @@ Structure for '$activity_name' created successfully.
 
 Next steps:
   cd $activity_name/
-  \$EDITOR _init_notes.txt                      # paste kickoff notes (then ask Claude to fill AGENT.md from them)
+  \$EDITOR _init_notes.txt                      # paste kickoff notes (then ask Claude to fill AGENTS.md from them)
   ./yolo.sh                                    # one-shot: build/start container + Claude in YOLO mode (--dangerously-skip-permissions)
   # ...or do it by hand:
   bash .devcontainer/up.sh                     # builds + starts the container (BuildKit + ssh-agent checks)

@@ -47,8 +47,8 @@ Everything produced during the engagement must live under this folder, organised
 
 ```
 <activity_name>/
-├── AGENT.md                 # this file — engagement rules
-├── CLAUDE.md                # pointer to AGENT.md for Claude Code
+├── AGENTS.md                 # this file — engagement rules
+├── CLAUDE.md                # pointer to AGENTS.md for Claude Code
 ├── scope.txt                # canonical in-scope targets, one per line
 ├── out-of-scope.txt         # canonical out-of-scope targets, one per line
 ├── <activity_name>.md       # findings index + executive summary
