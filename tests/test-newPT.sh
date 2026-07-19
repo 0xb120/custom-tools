@@ -72,6 +72,19 @@ test -x engagement-internal/yolo.sh || fail "yolo.sh missing or not executable a
 grep -q -- '--dangerously-skip-permissions' engagement-internal/yolo.sh || \
     fail "yolo.sh does not pass --dangerously-skip-permissions to claude"
 
+# Codex YOLO launcher lands at the root, executable, carries both bypass flags
+test -x engagement-internal/yolo-codex.sh || fail "yolo-codex.sh missing or not executable"
+grep -q -- '--dangerously-bypass-approvals-and-sandbox' engagement-internal/yolo-codex.sh || \
+    fail "yolo-codex.sh must pass --dangerously-bypass-approvals-and-sandbox"
+grep -q -- '--dangerously-bypass-hook-trust' engagement-internal/yolo-codex.sh || \
+    fail "yolo-codex.sh must pass --dangerously-bypass-hook-trust"
+
+# devcontainer.json mounts host ~/.codex and seeds it on postCreate
+grep -q 'target=/seed/host-codex' engagement-internal/.devcontainer/devcontainer.json || \
+    fail "devcontainer.json must bind-mount host ~/.codex to /seed/host-codex"
+grep -q 'seed-codex-env.sh apply /seed/host-codex' engagement-internal/.devcontainer/devcontainer.json || \
+    fail "devcontainer.json postCreate must seed Codex config"
+
 # {{PLACEHOLDER}} markers should all be substituted
 grep -q "{{" engagement-internal/.devcontainer/devcontainer.json && \
     fail "devcontainer.json still has unresolved {{PLACEHOLDER}}"

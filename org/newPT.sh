@@ -128,9 +128,11 @@ mkdir -p "$activity_name/.devcontainer"
 cp "$template_dir/devcontainer/Dockerfile"      "$activity_name/.devcontainer/Dockerfile"
 cp "$template_dir/devcontainer/devcontainer.json" "$activity_name/.devcontainer/devcontainer.json"
 cp "$template_dir/devcontainer/up.sh"           "$activity_name/.devcontainer/up.sh"
-# YOLO launcher at the engagement root: `up.sh` + `claude --dangerously-skip-permissions`.
+# YOLO launchers at the engagement root: `up.sh` + the agent in bypass mode.
 cp "$template_dir/devcontainer/yolo.sh"         "$activity_name/yolo.sh"
 chmod +x "$activity_name/yolo.sh"
+cp "$template_dir/devcontainer/yolo-codex.sh"   "$activity_name/yolo-codex.sh"
+chmod +x "$activity_name/yolo-codex.sh"
 sed -i \
     -e "s|{{ACTIVITY_NAME}}|$activity_name|g" \
     -e "s|{{INSTALL_GROUPS}}|$INSTALL_GROUPS|g" \
@@ -189,6 +191,7 @@ Next steps:
   cd $activity_name/
   \$EDITOR _init_notes.txt                      # paste kickoff notes (then ask Claude to fill AGENTS.md from them)
   ./yolo.sh                                    # one-shot: build/start container + Claude in YOLO mode (--dangerously-skip-permissions)
+  ./yolo-codex.sh                              # same, but launches Codex (--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust)
   # ...or do it by hand:
   bash .devcontainer/up.sh                     # builds + starts the container (BuildKit + ssh-agent checks)
   devcontainer exec --workspace-folder . claude
