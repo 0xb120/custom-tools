@@ -185,16 +185,18 @@ jq -e '.mcpServers.burp.url == "http://127.0.0.1:18080/sse"' engagement-burpurl/
 cd "$TMP"
 pass "BURP_MCP_URL env override is honored at scaffold time"
 
-# --- Test 6g: .codex/config.toml wires Burp via the mcp-remote stdio bridge ---
-grep -q '\[mcp_servers.burp\]' engagement-internal/.codex/config.toml || \
-    fail ".codex/config.toml must declare [mcp_servers.burp]"
-grep -q 'mcp-remote' engagement-internal/.codex/config.toml || \
-    fail ".codex/config.toml burp server must invoke the mcp-remote bridge"
-grep -q 'http://127.0.0.1:9876/sse' engagement-internal/.codex/config.toml || \
-    fail ".codex/config.toml must carry the substituted Burp MCP URL"
-grep -q "{{" engagement-internal/.codex/config.toml && \
-    fail ".codex/config.toml still has an unresolved {{PLACEHOLDER}}"
-pass ".codex/config.toml scaffolded with the Burp MCP bridge (URL substituted)"
+# --- Test 6g: Codex Burp MCP is registered into the container's GLOBAL config via
+# postCreate. Codex 0.144.6 ignores project-scoped mcp_servers (verified), so the
+# .codex/config.toml must NOT declare it; the server is added by `codex mcp add`. ---
+grep -q 'codex mcp add burp' engagement-internal/.devcontainer/devcontainer.json || \
+    fail "devcontainer.json postCreate must register the Burp MCP server for Codex"
+grep -q 'mcp-remote' engagement-internal/.devcontainer/devcontainer.json || \
+    fail "devcontainer.json codex mcp add must use the mcp-remote bridge"
+grep -q 'http://127.0.0.1:9876/sse' engagement-internal/.devcontainer/devcontainer.json || \
+    fail "devcontainer.json codex mcp add must carry the substituted Burp MCP URL"
+grep -q '\[mcp_servers.burp\]' engagement-internal/.codex/config.toml && \
+    fail ".codex/config.toml must NOT declare [mcp_servers.burp] (Codex ignores project mcp_servers)"
+pass "Codex Burp MCP registered via postCreate codex mcp add (global config)"
 
 # --- Test 6h: up.sh carries a non-blocking Burp MCP reachability probe ---
 test -f engagement-internal/.devcontainer/up.sh || fail ".devcontainer/up.sh missing"

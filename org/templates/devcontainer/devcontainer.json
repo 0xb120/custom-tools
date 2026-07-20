@@ -25,5 +25,5 @@
     "--network=host",
     "--env-file", "${localWorkspaceFolder}/.devcontainer/.env"
   ],
-  "postCreateCommand": "bash /home/pentester/custom-tools/org/seed-claude-env.sh apply /seed/host-claude --with-credentials || echo '[!] Claude config seed failed — launch claude and log in manually'; bash /home/pentester/custom-tools/org/seed-codex-env.sh apply /seed/host-codex --with-credentials || echo '[!] Codex config seed failed — launch codex and log in manually'; echo 'Engagement container ready. Run: claude  (or: codex)'"
+  "postCreateCommand": "bash /home/pentester/custom-tools/org/seed-claude-env.sh apply /seed/host-claude --with-credentials || echo '[!] Claude config seed failed — launch claude and log in manually'; bash /home/pentester/custom-tools/org/seed-codex-env.sh apply /seed/host-codex --with-credentials || echo '[!] Codex config seed failed — launch codex and log in manually'; codex mcp get burp >/dev/null 2>&1 || codex mcp add burp -- npx -y mcp-remote {{BURP_MCP_URL}} || echo '[!] codex mcp add burp failed — add manually: codex mcp add burp -- npx -y mcp-remote {{BURP_MCP_URL}}'; echo 'Engagement container ready. Run: claude  (or: codex)'"
 }

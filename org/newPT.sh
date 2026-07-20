@@ -183,14 +183,15 @@ cp "$template_dir/hooks/"*.sh        "$activity_name/.codex/hooks/"
 chmod +x "$activity_name/.codex/hooks/"*.sh
 
 # --- Burp MCP wiring (both agents) -----------------------------------------
-# .mcp.json is Claude's project-scoped MCP registry (native SSE). The Codex
-# entry lives in .codex/config.toml, and up.sh carries a reachability probe;
-# both gain the {{BURP_MCP_URL}} placeholder in later steps. Inject the endpoint.
+# .mcp.json is Claude's project-scoped MCP registry (native SSE). Codex ignores
+# project-scoped mcp_servers, so its Burp server is registered into the global
+# ~/.codex/config.toml by the devcontainer.json postCreate `codex mcp add` step.
+# up.sh carries a reachability probe. Inject the endpoint into all three.
 cp "$template_dir/devcontainer/mcp.json" "$activity_name/.mcp.json"
 sed -i "s|{{BURP_MCP_URL}}|$BURP_MCP_URL|g" \
     "$activity_name/.mcp.json" \
-    "$activity_name/.codex/config.toml" \
-    "$activity_name/.devcontainer/up.sh"
+    "$activity_name/.devcontainer/up.sh" \
+    "$activity_name/.devcontainer/devcontainer.json"
 
 cat <<EOF
 
