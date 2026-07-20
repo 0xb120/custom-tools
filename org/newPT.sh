@@ -189,7 +189,8 @@ chmod +x "$activity_name/.codex/hooks/"*.sh
 cp "$template_dir/devcontainer/mcp.json" "$activity_name/.mcp.json"
 sed -i "s|{{BURP_MCP_URL}}|$BURP_MCP_URL|g" \
     "$activity_name/.mcp.json" \
-    "$activity_name/.codex/config.toml"
+    "$activity_name/.codex/config.toml" \
+    "$activity_name/.devcontainer/up.sh"
 
 cat <<EOF
 

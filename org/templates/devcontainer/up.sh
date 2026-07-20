@@ -25,5 +25,19 @@ if ! ssh-add -l >/dev/null 2>&1; then
     exit 1
 fi
 
+# Advisory: warn (non-fatal) if the host-side Burp MCP endpoint isn't listening.
+# Burp runs on the host with the "MCP Server" extension; with --network=host the
+# in-container agent reaches it at this URL. If Burp is down the agent still
+# launches, just without Burp tools — so this never blocks. `timeout` guards
+# against the SSE stream hanging the probe; the `if !` keeps set -e happy.
+burp_url="{{BURP_MCP_URL}}"
+burp_hostport="${burp_url#*://}"; burp_hostport="${burp_hostport%%/*}"
+burp_host="${burp_hostport%%:*}"; burp_port="${burp_hostport##*:}"
+[ "$burp_host" = "$burp_port" ] && burp_port=80   # URL had no explicit :port
+if ! timeout 2 bash -c ">/dev/tcp/$burp_host/$burp_port" 2>/dev/null; then
+    echo "[!] Burp MCP endpoint $burp_url not reachable — start Burp + the 'MCP Server'" >&2
+    echo "    extension on the host, or the agent launches without Burp tools." >&2
+fi
+
 export DOCKER_BUILDKIT=1
 exec devcontainer up --workspace-folder .

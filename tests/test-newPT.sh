@@ -196,6 +196,16 @@ grep -q "{{" engagement-internal/.codex/config.toml && \
     fail ".codex/config.toml still has an unresolved {{PLACEHOLDER}}"
 pass ".codex/config.toml scaffolded with the Burp MCP bridge (URL substituted)"
 
+# --- Test 6h: up.sh carries a non-blocking Burp MCP reachability probe ---
+test -f engagement-internal/.devcontainer/up.sh || fail ".devcontainer/up.sh missing"
+grep -q 'Burp MCP endpoint' engagement-internal/.devcontainer/up.sh || \
+    fail "up.sh must warn when the Burp MCP endpoint is unreachable"
+grep -q 'http://127.0.0.1:9876/sse' engagement-internal/.devcontainer/up.sh || \
+    fail "up.sh probe must carry the substituted Burp MCP URL"
+grep -q "{{" engagement-internal/.devcontainer/up.sh && \
+    fail "up.sh still has an unresolved {{PLACEHOLDER}}"
+pass "up.sh scaffolded with a non-blocking Burp MCP reachability probe"
+
 # --- Test 7: verbose post-scaffold output names type, groups, Dockerfile, next-step cmds ---
 cd "$TMP"
 rm -rf engagement-cloud
