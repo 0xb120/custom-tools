@@ -622,12 +622,15 @@ install_recon() {
     sudo gem install --no-document wpscan
 
     # search_vulns (ra1nb0rn) — local CVE lookup by product/version/CPE.
-    # `-u` pulls the prebuilt vuln DB from the project's GitHub releases,
-    # analogous to `wpprobe update-db`. Both run via as_user so the venv and
-    # DB land under $TARGET_USER's home, visible through /etc/environment.
-    if ! as_user command -v search_vulns >/dev/null 2>&1; then
-        as_user pipx install search_vulns
-    fi
+    # Install from git master, NOT the PyPI release: the released wheel lags the
+    # prebuilt DB schema, so `-u` then leaves an INCOMPLETE DB and queries fail
+    # with "no such table: ...". Uninstall first (pipx's uv backend refuses to
+    # replace a venv it did not create this session, so `--force` alone errors on
+    # a stale prior install). `-u` pulls the prebuilt vuln DB from the project's
+    # GitHub releases, analogous to `wpprobe update-db`. All run via as_user so the
+    # venv and DB land under $TARGET_USER's home, visible through /etc/environment.
+    as_user pipx uninstall search-vulns >/dev/null 2>&1 || true
+    as_user pipx install "git+https://github.com/ra1nb0rn/search_vulns.git"
     as_user search_vulns -u || echo "[!] search_vulns -u failed (DB sync skipped — re-run later)"
 
     # searchsploit (Exploit-DB CLI) — local exploit lookup, same workflow
