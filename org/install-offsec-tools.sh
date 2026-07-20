@@ -555,7 +555,12 @@ install_sast() {
     # catches secrets in HTML/inline scripts jsluice's .js-only view misses) + trufflehog
     # (provider-verified, near-zero FP) + detect-secrets (entropy). The two Go tools land in $GOBIN
     # (~/go/bin); detect-secrets is a pipx CLI (~/.local/bin) like the other Python tools.
-    go_install -v github.com/gitleaks/gitleaks/v8@latest
+    # NB: install path is zricethezav/*, NOT gitleaks/gitleaks — the repo moved
+    # orgs on GitHub but its go.mod still declares module github.com/zricethezav/
+    # gitleaks/v8, so `go install github.com/gitleaks/gitleaks/v8` fails hard with
+    # "version constraints conflict: module declares its path as ...". Use the
+    # self-declared path. (This is deterministic, not a network flake.)
+    go_install -v github.com/zricethezav/gitleaks/v8@latest
     go_install -v github.com/trufflesecurity/trufflehog/v3@latest
     as_user pipx install detect-secrets
 
