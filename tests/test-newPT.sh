@@ -161,6 +161,30 @@ for h in log-command render-after-db; do
 done
 pass ".codex/ scaffolded: config.toml + hooks.json (3 hooks, no report-format) + shared scripts"
 
+# --- Test 6d: .mcp.json wires the Burp MCP server for Claude (native SSE) ---
+test -f engagement-internal/.mcp.json || fail ".mcp.json missing at engagement root"
+jq -e . engagement-internal/.mcp.json >/dev/null || fail ".mcp.json is not valid JSON"
+jq -e '.mcpServers.burp.type == "sse"' engagement-internal/.mcp.json >/dev/null || \
+    fail ".mcp.json must declare mcpServers.burp with type=sse"
+jq -e '.mcpServers.burp.url == "http://127.0.0.1:9876/sse"' engagement-internal/.mcp.json >/dev/null || \
+    fail ".mcp.json burp.url must be the default Burp MCP endpoint"
+grep -q "{{" engagement-internal/.mcp.json && fail ".mcp.json still has an unresolved {{PLACEHOLDER}}"
+pass ".mcp.json scaffolded with the Burp MCP server (native SSE, URL substituted)"
+
+# --- Test 6e: settings.json auto-approves project MCP servers (yolo-safe) ---
+jq -e '.enableAllProjectMcpServers == true' engagement-internal/.claude/settings.json >/dev/null || \
+    fail ".claude/settings.json must set enableAllProjectMcpServers=true"
+pass ".claude/settings.json enables project MCP servers (no trust prompt in yolo)"
+
+# --- Test 6f: BURP_MCP_URL env override flows into .mcp.json ---
+cd "$TMP"
+rm -rf engagement-burpurl
+BURP_MCP_URL="http://127.0.0.1:18080/sse" bash "$SCRIPT" lite engagement-burpurl >/dev/null
+jq -e '.mcpServers.burp.url == "http://127.0.0.1:18080/sse"' engagement-burpurl/.mcp.json >/dev/null || \
+    fail "BURP_MCP_URL override should flow into .mcp.json"
+cd "$TMP"
+pass "BURP_MCP_URL env override is honored at scaffold time"
+
 # --- Test 7: verbose post-scaffold output names type, groups, Dockerfile, next-step cmds ---
 cd "$TMP"
 rm -rf engagement-cloud

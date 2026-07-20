@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "burp": {
+      "type": "sse",
+      "url": "{{BURP_MCP_URL}}"
+    }
+  }
+}
