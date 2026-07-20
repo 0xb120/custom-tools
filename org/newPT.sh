@@ -123,6 +123,11 @@ sqlite3 "$activity_name/db/engagement.db" < "$template_dir/db/schema.sql" >/dev/
 
 CUSTOM_TOOLS_REF="main"
 
+# Burp Suite MCP endpoint (SSE) both agents connect to. Burp runs on the HOST
+# with the "MCP Server" extension; the container reaches it via --network=host.
+# Overridable at scaffold time: BURP_MCP_URL=http://host:port/sse bash newPT.sh ...
+BURP_MCP_URL="${BURP_MCP_URL:-http://127.0.0.1:9876/sse}"
+
 # .devcontainer/ — Docker sandbox configuration for Claude Code agents.
 mkdir -p "$activity_name/.devcontainer"
 cp "$template_dir/devcontainer/Dockerfile"      "$activity_name/.devcontainer/Dockerfile"
@@ -176,6 +181,17 @@ cp "$template_dir/codex/config.toml" "$activity_name/.codex/config.toml"
 cp "$template_dir/codex/hooks.json"  "$activity_name/.codex/hooks.json"
 cp "$template_dir/hooks/"*.sh        "$activity_name/.codex/hooks/"
 chmod +x "$activity_name/.codex/hooks/"*.sh
+
+# --- Burp MCP wiring (both agents) -----------------------------------------
+# .mcp.json is Claude's project-scoped MCP registry (native SSE). Codex ignores
+# project-scoped mcp_servers, so its Burp server is registered into the global
+# ~/.codex/config.toml by the devcontainer.json postCreate `codex mcp add` step.
+# up.sh carries a reachability probe. Inject the endpoint into all three.
+cp "$template_dir/devcontainer/mcp.json" "$activity_name/.mcp.json"
+sed -i "s|{{BURP_MCP_URL}}|$BURP_MCP_URL|g" \
+    "$activity_name/.mcp.json" \
+    "$activity_name/.devcontainer/up.sh" \
+    "$activity_name/.devcontainer/devcontainer.json"
 
 cat <<EOF
 
