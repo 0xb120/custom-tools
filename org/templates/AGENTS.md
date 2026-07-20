@@ -36,7 +36,7 @@ Custom headers used for testing, if any:
 
 ### Burp MCP
 
-This engagement is pre-wired to a Burp Suite MCP server (SSE, host-side; see `.mcp.json` and `.codex/config.toml`). When Burp is running with the "MCP Server" extension, the agent can drive proxy history, Repeater, and the scanner directly. Treat every action through it as live traffic to client infrastructure — stay within the testing window, source IPs, and scope defined above.
+This engagement is pre-wired to a Burp Suite MCP server (SSE, host-side). Claude reads it from `.mcp.json`; Codex is registered at container setup (`codex mcp add burp`). When Burp is running with the "MCP Server" extension, the agent can drive proxy history, Repeater, and the scanner directly. Treat every action through it as live traffic to client infrastructure — stay within the testing window, source IPs, and scope defined above.
 
 ## Credentials
 

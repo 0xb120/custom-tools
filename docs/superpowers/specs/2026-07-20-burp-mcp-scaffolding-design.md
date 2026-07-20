@@ -64,17 +64,12 @@ Claude's project-scoped MCP registry, scaffolded to `<activity>/.mcp.json`:
 ### 2. `org/templates/claude/settings.json`
 Add `"enableAllProjectMcpServers": true` at the top level (beside `permissions`/`hooks`). Rationale: in `bypassPermissions`/yolo mode Claude still prompts once to approve a server found in `.mcp.json`; this flag auto-approves project MCP servers so the yolo launcher stays non-interactive. Only `burp` is ever in `.mcp.json`, so blanket-enabling project servers is acceptable and simpler than an explicit `enabledMcpjsonServers` allowlist.
 
-### 3. `org/templates/codex/config.toml`
-Append:
-```toml
-# Burp Suite MCP server. Burp runs on the HOST with the "MCP Server" extension
-# exposing SSE; the container reaches it via --network=host. Codex's native url
-# transport is Streamable-HTTP (uncertain against Burp's SSE), so we bridge with
-# mcp-remote (node, pre-installed in the image; npx -y falls back to a fetch).
-[mcp_servers.burp]
-command = "npx"
-args    = ["-y", "mcp-remote", "{{BURP_MCP_URL}}"]
+### 3. Codex MCP registration (via devcontainer postCreate, NOT project config.toml)
+**Superseded during implementation** — see the Verification checklist. Codex 0.144.6 ignores project-scoped `mcp_servers`, so the server is **not** declared in `org/templates/codex/config.toml` (a NOTE comment records why). Instead the devcontainer `postCreateCommand` (Deliverable §6-container) registers it into the container's **global** `~/.codex/config.toml`, right after the Codex seed:
 ```
+codex mcp get burp >/dev/null 2>&1 || codex mcp add burp -- npx -y mcp-remote {{BURP_MCP_URL}} || echo '[!] codex mcp add burp failed — add manually: ...'
+```
+`{{BURP_MCP_URL}}` is substituted into `devcontainer.json` by `newPT.sh`. The `codex mcp get` guard makes it idempotent across container recreations.
 
 ### 4. `org/templates/devcontainer/up.sh`
 Add a non-blocking reachability probe near the existing ssh-agent pre-flight. It must not trip `set -euo pipefail` and must not hang on the SSE stream (short timeout). Approach: derive host/port from `{{BURP_MCP_URL}}` (or curl with a short `--max-time` and treat connection-refused, exit 7 / empty status, as "not listening"); on failure print a one-line warning and continue:
@@ -90,8 +85,8 @@ The probe runs on the host (where up.sh executes and where Burp runs), so it is 
   BURP_MCP_URL="${BURP_MCP_URL:-http://127.0.0.1:9876/sse}"
   ```
 - Copy the new template: `cp "$template_dir/devcontainer/mcp.json" "$activity_name/.mcp.json"`.
-- Extend the placeholder-substitution so `{{BURP_MCP_URL}}` is injected into the three files that carry it: `<activity>/.mcp.json`, `<activity>/.codex/config.toml`, `<activity>/.devcontainer/up.sh`. Note: `config.toml` and `up.sh` are currently `cp`-verbatim — they now need a sed pass. Keep the existing Dockerfile/devcontainer.json sed block as-is; add the new placeholder to the relevant files (either extend that block's file list or add a focused second sed invocation for the MCP-URL placeholder).
-- Order matters: substitute **after** the `.codex/` and `.mcp.json` files are copied.
+- Extend the placeholder-substitution so `{{BURP_MCP_URL}}` is injected into the three files that carry it: `<activity>/.mcp.json`, `<activity>/.devcontainer/up.sh`, `<activity>/.devcontainer/devcontainer.json` (the last for the postCreate `codex mcp add`). A focused second `sed` invocation handles this placeholder.
+- Order matters: substitute **after** `.mcp.json`, `up.sh`, and `devcontainer.json` are copied.
 
 ### 6. `org/install-offsec-tools.sh` (`install_AI`)
 Pre-install the bridge so the Codex path resolves without a first-run network fetch:
@@ -104,7 +99,7 @@ Global npm bins land in `/usr/local/bin` (on the image PATH), so `npx` finds it 
 
 ### 7. `org/templates/AGENTS.md`
 Add a short subsection (in the tooling area) documenting the channel and the scope caution:
-> **Burp MCP.** This engagement is pre-wired to a Burp Suite MCP server (SSE, host-side; see `.mcp.json` / `.codex/config.toml`). When Burp is running with the "MCP Server" extension, the agent can drive proxy history, Repeater, and the scanner. Treat it as live traffic to client infrastructure — respect the testing window and scope in this file.
+> **Burp MCP.** This engagement is pre-wired to a Burp Suite MCP server (SSE, host-side). Claude reads it from `.mcp.json`; Codex is registered at container setup (`codex mcp add burp`). When Burp is running with the "MCP Server" extension, the agent can drive proxy history, Repeater, and the scanner. Treat it as live traffic to client infrastructure — respect the testing window and scope in this file.
 
 Keep it terse and placeholder-free (per the template-terseness convention).
 
@@ -112,18 +107,24 @@ Keep it terse and placeholder-free (per the template-terseness convention).
 
 Extend `tests/test-newPT.sh` (throwaway-scaffold style, matching existing assertions):
 - Scaffolded engagement contains `.mcp.json`; it is valid JSON, declares `mcpServers.burp` with `type=sse`, and its `url` contains no residual `{{` (placeholder substituted).
-- `.codex/config.toml` contains a `[mcp_servers.burp]` table whose `args` reference `mcp-remote` and the substituted URL (no `{{`).
+- `.devcontainer/devcontainer.json` postCreate contains `codex mcp add burp` with `mcp-remote` and the substituted URL; `.codex/config.toml` does **not** declare `[mcp_servers.burp]`.
 - `.claude/settings.json` sets `enableAllProjectMcpServers` to `true`.
 - `.devcontainer/up.sh` contains the reachability check and the substituted URL (no `{{`).
-- URL override honored: running the scaffold with `BURP_MCP_URL=http://127.0.0.1:18080/sse` produces that URL in all three files.
+- URL override honored: running the scaffold with `BURP_MCP_URL=http://127.0.0.1:18080/sse` produces that URL in `.mcp.json`.
+- `tests/test-install-offsec-tools.sh`: `install_AI` source contains `npm install -g mcp-remote`.
 
-## Verification checklist (resolve during implementation)
+## Verification checklist (results)
 
-- [ ] **Codex table merge**: confirm Codex 0.144.6 actually registers `[mcp_servers.burp]` from the project `.codex/config.toml` (tables merged with `~/.codex/config.toml`, not only scalars). If it does **not**, fall back to injecting the server into the seeded `~/.codex/config.toml` (via `seed-codex-env.sh`/`postCreateCommand`).
-- [ ] **Native Codex path**: test `[mcp_servers.burp] url = "{{BURP_MCP_URL}}"` (native Streamable-HTTP/SSE) against a live Burp. If it connects cleanly, drop `mcp-remote` for Codex and simplify to the native form (and reconsider the `install_AI` pre-install).
-- [ ] **Claude auto-approve**: verify `enableAllProjectMcpServers: true` suppresses the `.mcp.json` trust prompt under `--dangerously-skip-permissions`.
-- [ ] **up.sh probe**: confirm the chosen probe returns promptly against a live SSE endpoint (does not hang on the stream) and correctly reports "not listening" when Burp is down.
-- [ ] **mcp-remote availability**: confirm the pre-installed global is on PATH for the non-root `pentester` user and that `npx -y mcp-remote` uses it rather than re-fetching.
+Resolved during implementation (2026-07-20, `codex-cli 0.144.6`, `claude 2.1.215`):
+
+- [x] **Codex table merge — RESOLVED (fallback taken).** Codex 0.144.6 loads `mcp_servers` **only** from the global `~/.codex/config.toml`, not from a project-scoped `.codex/config.toml`: with the block in a global `CODEX_HOME/config.toml`, `codex mcp list` shows `burp enabled`; with the identical block in the engagement's project `.codex/config.toml`, `codex mcp list`/`get` report no such server (even after `git init`). Implemented the fallback: the project config.toml no longer declares the server, and the devcontainer `postCreateCommand` registers it into the container's global config via `codex mcp get burp >/dev/null 2>&1 || codex mcp add burp -- npx -y mcp-remote <url>` (verified idempotent — a second run is skipped by the guard, no duplicate block).
+- [x] **Claude registration — VERIFIED.** From within a scaffolded engagement, `claude mcp list` shows `burp: <url> (SSE)` and attempts to connect (`✘ Failed to connect` only because no Burp was listening) — confirming Claude discovers and registers the server from the project `.mcp.json`.
+- [x] **up.sh probe — VERIFIED (logic).** The substituted `up.sh` parses (`bash -n`); the probe warns on a closed port, returns immediately (connection-refused is instant), and does not trip `set -euo pipefail`.
+- [ ] **Claude auto-approve (runtime).** Confirm `enableAllProjectMcpServers: true` suppresses the `.mcp.json` trust prompt under `--dangerously-skip-permissions` in an actual `./yolo.sh` run. (Needs a built container.)
+- [ ] **mcp-remote availability (runtime).** Confirm the pre-installed global is on PATH for the `pentester` user in the built image and that `npx -y mcp-remote` uses it rather than re-fetching. (Needs a built container.)
+- [ ] **End-to-end connect (runtime).** With Burp + the "MCP Server" extension live on the host, confirm both `claude` and `codex` connect and list Burp tools from inside the container.
+
+**Native Codex path (not taken):** `codex mcp add` supports `--url` (native Streamable-HTTP), but Burp exposes SSE and native SSE↔Streamable-HTTP compatibility is unverified, so the `mcp-remote` bridge is kept as the reliable default.
 
 ## Out of scope
 
