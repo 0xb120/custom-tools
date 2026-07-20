@@ -206,6 +206,11 @@ grep -q "{{" engagement-internal/.devcontainer/up.sh && \
     fail "up.sh still has an unresolved {{PLACEHOLDER}}"
 pass "up.sh scaffolded with a non-blocking Burp MCP reachability probe"
 
+# --- Test 6i: AGENTS.md documents the pre-wired Burp MCP channel ---
+grep -q 'Burp MCP' engagement-internal/AGENTS.md || \
+    fail "AGENTS.md must document the pre-wired Burp MCP channel"
+pass "AGENTS.md documents the Burp MCP channel and scope caution"
+
 # --- Test 7: verbose post-scaffold output names type, groups, Dockerfile, next-step cmds ---
 cd "$TMP"
 rm -rf engagement-cloud

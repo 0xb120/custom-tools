@@ -34,6 +34,10 @@ Custom headers used for testing, if any:
 - `<list>`
 
 
+### Burp MCP
+
+This engagement is pre-wired to a Burp Suite MCP server (SSE, host-side; see `.mcp.json` and `.codex/config.toml`). When Burp is running with the "MCP Server" extension, the agent can drive proxy history, Repeater, and the scanner directly. Treat every action through it as live traffic to client infrastructure — stay within the testing window, source IPs, and scope defined above.
+
 ## Credentials
 
 **Client-provided** test accounts and other secrets the client hands you go in `attachments/credentials.txt` (or an encrypted file). **Discovered** credentials (recon hits, dumps, cracking, spray hits) go in `wl/` — see [Credential tracking](#credential-tracking) for the layout and the valid-combinations table.
