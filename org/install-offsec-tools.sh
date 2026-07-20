@@ -561,7 +561,14 @@ install_sast() {
     # "version constraints conflict: module declares its path as ...". Use the
     # self-declared path. (This is deterministic, not a network flake.)
     go_install -v github.com/zricethezav/gitleaks/v8@latest
-    go_install -v github.com/trufflesecurity/trufflehog/v3@latest
+    # trufflehog: prebuilt binary, NOT `go install @latest` — its go.mod carries
+    # replace directives, which `go install pkg@version` rejects outright ("must
+    # not contain directives that would cause it to be interpreted differently
+    # than if it were the main module"). The maintainers ship a binary + install
+    # script for exactly this; land it in $GOBIN alongside the other Go SAST
+    # tools (chowned back to $TARGET_USER at the end of the run).
+    curl $CURL_INSECURE -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
+        | sh -s -- -b "$GOBIN"
     as_user pipx install detect-secrets
 
     clone_if_missing https://github.com/semgrep/semgrep-rules "$INSTALL_DIR/semgrep-rules"
