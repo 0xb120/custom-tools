@@ -185,6 +185,17 @@ jq -e '.mcpServers.burp.url == "http://127.0.0.1:18080/sse"' engagement-burpurl/
 cd "$TMP"
 pass "BURP_MCP_URL env override is honored at scaffold time"
 
+# --- Test 6g: .codex/config.toml wires Burp via the mcp-remote stdio bridge ---
+grep -q '\[mcp_servers.burp\]' engagement-internal/.codex/config.toml || \
+    fail ".codex/config.toml must declare [mcp_servers.burp]"
+grep -q 'mcp-remote' engagement-internal/.codex/config.toml || \
+    fail ".codex/config.toml burp server must invoke the mcp-remote bridge"
+grep -q 'http://127.0.0.1:9876/sse' engagement-internal/.codex/config.toml || \
+    fail ".codex/config.toml must carry the substituted Burp MCP URL"
+grep -q "{{" engagement-internal/.codex/config.toml && \
+    fail ".codex/config.toml still has an unresolved {{PLACEHOLDER}}"
+pass ".codex/config.toml scaffolded with the Burp MCP bridge (URL substituted)"
+
 # --- Test 7: verbose post-scaffold output names type, groups, Dockerfile, next-step cmds ---
 cd "$TMP"
 rm -rf engagement-cloud

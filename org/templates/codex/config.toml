@@ -9,3 +9,11 @@ sandbox_mode   = "danger-full-access"
 # check is not mirrored for Codex. Codex edits go through apply_patch (a patch
 # blob with no file_path), so that hook needs separate handling. Tracked in
 # docs/superpowers/specs/2026-07-19-codex-config-parity-design.md.
+
+# Burp Suite MCP server. Burp runs on the HOST with the "MCP Server" extension
+# exposing SSE; the container reaches it via --network=host. Codex's native url
+# transport is Streamable-HTTP (uncertain against Burp's SSE), so we bridge with
+# mcp-remote (node; pre-installed in the image, npx -y falls back to a fetch).
+[mcp_servers.burp]
+command = "npx"
+args    = ["-y", "mcp-remote", "{{BURP_MCP_URL}}"]

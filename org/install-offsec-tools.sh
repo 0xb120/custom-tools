@@ -812,6 +812,11 @@ install_AI() {
         sudo npm install -g @openai/codex
     fi
 
+    # mcp-remote — node stdio<->SSE/HTTP bridge. Codex reaches the host's Burp
+    # MCP (SSE) through it; pre-installed so `npx -y mcp-remote` resolves without
+    # a first-run fetch. Global npm bins land on the image PATH (/usr/local/bin).
+    sudo npm install -g mcp-remote
+
     # sgpt — ChatGPT in the terminal (https://github.com/tbckr/sgpt).
     go_install -v github.com/tbckr/sgpt/v2/cmd/sgpt@latest
 

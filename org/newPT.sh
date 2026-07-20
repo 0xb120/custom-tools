@@ -188,7 +188,8 @@ chmod +x "$activity_name/.codex/hooks/"*.sh
 # both gain the {{BURP_MCP_URL}} placeholder in later steps. Inject the endpoint.
 cp "$template_dir/devcontainer/mcp.json" "$activity_name/.mcp.json"
 sed -i "s|{{BURP_MCP_URL}}|$BURP_MCP_URL|g" \
-    "$activity_name/.mcp.json"
+    "$activity_name/.mcp.json" \
+    "$activity_name/.codex/config.toml"
 
 cat <<EOF
 

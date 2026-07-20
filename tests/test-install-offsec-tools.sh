@@ -63,4 +63,9 @@ fi
 pass "empty --groups= exits 1"
 rm -f /tmp/err.log
 
+# --- Test 7: install_AI pre-installs the mcp-remote bridge (Codex <-> Burp MCP) ---
+grep -q 'npm install -g mcp-remote' "$SCRIPT" || \
+    fail "install_AI must pre-install mcp-remote (Codex Burp MCP bridge)"
+pass "install_AI pre-installs mcp-remote"
+
 echo "All tests passed."
