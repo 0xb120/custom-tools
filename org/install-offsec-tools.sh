@@ -203,6 +203,33 @@ mkdir -p "$GOBIN"
 
 # --- Helpers ---
 
+# retry <max> <delay> <cmd...> : re-run a flaky command up to <max> times,
+# sleeping <delay>s between attempts; returns the command's last exit status.
+# Module fetches through proxy.golang.org / storage.googleapis.com occasionally
+# drop mid-build on a transient network blip (and in an IPv6-less container Go's
+# dialer surfaces it as "cannot assign requested address" on the AAAA it always
+# tries first). A multi-minute install shouldn't die on one dropped connection.
+retry() {
+    local max="$1" delay="$2"; shift 2
+    local n=1 rc=0
+    until "$@"; do
+        rc=$?
+        if [ "$n" -ge "$max" ]; then
+            echo "[!] '$*' failed after $max attempts (rc=$rc)" >&2
+            return "$rc"
+        fi
+        echo "[retry $n/$max] '$*' failed (rc=$rc); sleeping ${delay}s..." >&2
+        sleep "$delay"
+        n=$((n + 1))
+    done
+}
+
+# go_install : drop-in for `go install` with retry. Go reuses its module cache
+# across attempts, so a retry resumes rather than re-downloading everything.
+go_install() {
+    retry 3 10 go install "$@"
+}
+
 clone_if_missing() {
     # Usage: clone_if_missing <url> <dest> [extra git args...]
     local url="$1"
@@ -441,14 +468,14 @@ install_docker() {
 
 install_PD(){
     echo "[+] Installing Project Discovery Tools..."
-    go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
-    go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
-    go install -v github.com/projectdiscovery/tlsx/cmd/tlsx@latest
-    go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
-    go install -v github.com/projectdiscovery/katana/cmd/katana@latest
-    go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
-    go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
-    go install -v github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest
+    go_install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
+    go_install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
+    go_install -v github.com/projectdiscovery/tlsx/cmd/tlsx@latest
+    go_install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+    go_install -v github.com/projectdiscovery/katana/cmd/katana@latest
+    go_install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
+    go_install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+    go_install -v github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest
 
     clone_if_missing https://github.com/blechschmidt/massdns "$INSTALL_DIR/massdns"
     make -C "$INSTALL_DIR/massdns"
@@ -456,40 +483,40 @@ install_PD(){
 
     clone_if_missing https://github.com/trickest/resolvers "$INSTALL_DIR/resolvers"
 
-    go install -v github.com/projectdiscovery/mapcidr/cmd/mapcidr@latest
-    go install -v github.com/projectdiscovery/shuffledns/cmd/shuffledns@latest
-    go install -v github.com/projectdiscovery/alterx/cmd/alterx@latest
-    go install -v github.com/projectdiscovery/uncover/cmd/uncover@latest
-    go install -v github.com/projectdiscovery/urlfinder/cmd/urlfinder@latest
+    go_install -v github.com/projectdiscovery/mapcidr/cmd/mapcidr@latest
+    go_install -v github.com/projectdiscovery/shuffledns/cmd/shuffledns@latest
+    go_install -v github.com/projectdiscovery/alterx/cmd/alterx@latest
+    go_install -v github.com/projectdiscovery/uncover/cmd/uncover@latest
+    go_install -v github.com/projectdiscovery/urlfinder/cmd/urlfinder@latest
 }
 
 install_praetorian(){
     echo "[+] Installing Praetorian Tools..."
-    go install github.com/praetorian-inc/fingerprintx/cmd/fingerprintx@latest
-    go install github.com/praetorian-inc/nerva/cmd/nerva@latest
-    go install github.com/praetorian-inc/julius/cmd/julius@latest
-    go install github.com/praetorian-inc/brutus/cmd/brutus@latest
-    go install github.com/praetorian-inc/augustus/cmd/augustus@latest
-    go install github.com/praetorian-inc/titus/cmd/titus@latest
+    go_install github.com/praetorian-inc/fingerprintx/cmd/fingerprintx@latest
+    go_install github.com/praetorian-inc/nerva/cmd/nerva@latest
+    go_install github.com/praetorian-inc/julius/cmd/julius@latest
+    go_install github.com/praetorian-inc/brutus/cmd/brutus@latest
+    go_install github.com/praetorian-inc/augustus/cmd/augustus@latest
+    go_install github.com/praetorian-inc/titus/cmd/titus@latest
 }
 
 install_tomnomnom(){
     echo "[+] Installing Tomnomnom's Tools..."
-    go install -v github.com/tomnomnom/unfurl@latest
-    go install -v github.com/tomnomnom/assetfinder@latest
-    go install -v github.com/tomnomnom/anew@latest
-    go install -v github.com/tomnomnom/qsreplace@latest
-    go install -v github.com/tomnomnom/hacks/tok@latest
-    go install -v github.com/tomnomnom/hacks/html-tool@latest
-    go install -v github.com/tomnomnom/httprobe@latest
-    go install -v github.com/tomnomnom/gron@latest
-    go install -v github.com/tomnomnom/gf@latest
-    go install -v github.com/tomnomnom/comb@latest
+    go_install -v github.com/tomnomnom/unfurl@latest
+    go_install -v github.com/tomnomnom/assetfinder@latest
+    go_install -v github.com/tomnomnom/anew@latest
+    go_install -v github.com/tomnomnom/qsreplace@latest
+    go_install -v github.com/tomnomnom/hacks/tok@latest
+    go_install -v github.com/tomnomnom/hacks/html-tool@latest
+    go_install -v github.com/tomnomnom/httprobe@latest
+    go_install -v github.com/tomnomnom/gron@latest
+    go_install -v github.com/tomnomnom/gf@latest
+    go_install -v github.com/tomnomnom/comb@latest
 }
 
 install_takeover() {
     echo "[+] Installing Subdomain Takeover Tools..."
-    go install -v github.com/haccer/subjack@latest
+    go_install -v github.com/haccer/subjack@latest
 }
 
 install_cracking() {
@@ -501,9 +528,9 @@ install_dictionary(){
     echo "[+] Installing Custom Wordlist Tools..."
     sudo apt install -y cewl
     clone_if_missing https://github.com/t3l3machus/undust.py "$INSTALL_DIR/undust.py"
-    go install -v github.com/musana/fuzzuli@latest
-    go install -v github.com/s0md3v/wl/cmd/wl@latest
-    go install -v github.com/ImAyrix/fallparams@latest
+    go_install -v github.com/musana/fuzzuli@latest
+    go_install -v github.com/s0md3v/wl/cmd/wl@latest
+    go_install -v github.com/ImAyrix/fallparams@latest
 
     echo "[+] Installing wordlists..."
     echo "[*] Downloading SecLists (this may take a while)..."
@@ -521,15 +548,15 @@ install_sast() {
     echo "[+] Installing SAST Tools..."
     sudo apt install -y cloc ripgrep zstd
     as_user pipx install semgrep
-    go install -v github.com/BishopFox/jsluice/cmd/jsluice@latest
+    go_install -v github.com/BishopFox/jsluice/cmd/jsluice@latest
 
     # Secret-scanning fleet — ptflow's content_discovery runs these ∥ over the downloaded response
     # corpus, then merges/dedups the hits: jsluice (above, JS AST) + gitleaks (regex, ANY file, so it
     # catches secrets in HTML/inline scripts jsluice's .js-only view misses) + trufflehog
     # (provider-verified, near-zero FP) + detect-secrets (entropy). The two Go tools land in $GOBIN
     # (~/go/bin); detect-secrets is a pipx CLI (~/.local/bin) like the other Python tools.
-    go install -v github.com/gitleaks/gitleaks/v8@latest
-    go install -v github.com/trufflesecurity/trufflehog/v3@latest
+    go_install -v github.com/gitleaks/gitleaks/v8@latest
+    go_install -v github.com/trufflesecurity/trufflehog/v3@latest
     as_user pipx install detect-secrets
 
     clone_if_missing https://github.com/semgrep/semgrep-rules "$INSTALL_DIR/semgrep-rules"
@@ -570,11 +597,11 @@ install_dast() {
     # shortscan + shortutil (IIS/ASP.NET 8.3 short-name enumeration — ptflow tech_enum). shortutil
     # builds the rainbow table shortscan resolves leaked 8.3 names against, so ptflow needs BOTH
     # (same repo, sibling cmd/); installing only shortscan leaves the enum half-wired.
-    go install -v github.com/bitquark/shortscan/cmd/shortscan@latest
-    go install -v github.com/bitquark/shortscan/cmd/shortutil@latest
+    go_install -v github.com/bitquark/shortscan/cmd/shortscan@latest
+    go_install -v github.com/bitquark/shortscan/cmd/shortutil@latest
 
     # dalfox (XSS) — ptflow's dedicated scanner over the request catalog's raw requests, run ∥ sqlmap.
-    go install -v github.com/hahwul/dalfox/v2@latest
+    go_install -v github.com/hahwul/dalfox/v2@latest
 
     # Hidden-parameter discovery fleet (ptflow param_fuzz, PHASE 4): arjun (pipx → ~/.local/bin) ∥ x8.
     # x8 has no recent crates.io build the distro cargo can compile, so ptflow expects the PREBUILT
@@ -603,18 +630,18 @@ install_recon() {
     echo "[+] Installing Port Scanning Tools..."
     sudo apt install -y nmap onesixtyone
     as_user pipx install git+https://github.com/Tib3rius/AutoRecon.git
-    go install -v github.com/pry0cc/tew@latest
+    go_install -v github.com/pry0cc/tew@latest
 
     clone_if_missing https://github.com/robertdavidgraham/masscan "$INSTALL_DIR/masscan"
     make -C "$INSTALL_DIR/masscan"
     sudo make -C "$INSTALL_DIR/masscan" install
 
     echo "[+] Installing recon tools..."
-    go install -v github.com/lc/gau/v2/cmd/gau@latest
+    go_install -v github.com/lc/gau/v2/cmd/gau@latest
     # crawley (s0rg) — fast unix-way web crawler; alternative/complement to katana
     # for endpoint discovery, emits one URL per line for piping into the pipeline.
-    go install -v github.com/s0rg/crawley/cmd/crawley@latest
-    go install -v github.com/Chocapikk/wpprobe@latest
+    go_install -v github.com/s0rg/crawley/cmd/crawley@latest
+    go_install -v github.com/Chocapikk/wpprobe@latest
     wpprobe update-db
 
     # wpscan — WordPress vulnerability scanner. Ruby gem (ruby + ruby-dev
@@ -687,7 +714,7 @@ install_RT(){
     as_user pipx install git+https://github.com/dirkjanm/mitm6
 
     # AD / Kerberos toolkit
-    go install -v github.com/ropnop/kerbrute@latest
+    go_install -v github.com/ropnop/kerbrute@latest
     as_user pipx install certipy-ad
     # evil-winrm — Ruby gem (ruby + ruby-dev already in install_base)
     sudo gem install --no-document evil-winrm
@@ -744,7 +771,7 @@ install_cloud() {
     as_user pipx install pacu
     as_user pipx install prowler
     as_user pipx install scoutsuite
-    go install -v github.com/BishopFox/cloudfox@latest
+    go_install -v github.com/BishopFox/cloudfox@latest
 }
 
 install_reversing() {
@@ -755,7 +782,7 @@ install_reversing() {
 
 install_utils() {
     echo "[+] Installing CLI Utilities..."
-    go install -v github.com/charmbracelet/glow@latest
+    go_install -v github.com/charmbracelet/glow@latest
 }
 
 install_AI() {
@@ -774,7 +801,7 @@ install_AI() {
     fi
 
     # sgpt — ChatGPT in the terminal (https://github.com/tbckr/sgpt).
-    go install -v github.com/tbckr/sgpt/v2/cmd/sgpt@latest
+    go_install -v github.com/tbckr/sgpt/v2/cmd/sgpt@latest
 
     # Strix — autonomous AI pentest agent (https://github.com/usestrix/strix).
     as_user pipx install strix-agent
