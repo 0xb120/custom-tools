@@ -16,7 +16,16 @@
   "mounts": [
     "source=${localEnv:HOME}/.claude,target=/seed/host-claude,type=bind,readonly",
     "source=${localEnv:HOME}/.codex,target=/seed/host-codex,type=bind,readonly",
-    "source=${localEnv:HOME}/.ssh,target=/home/pentester/.ssh,type=bind,readonly"
+    "source=${localEnv:HOME}/.ssh,target=/home/pentester/.ssh,type=bind,readonly",
+    // DNS follows the host. Bind-mount the host resolver config read-only so the
+    // container resolves names exactly like the host — VPN up/down included —
+    // instead of freezing the stale snapshot Docker copies in at creation time.
+    // Paired with --network=host below this makes the container a filesystem
+    // sandbox on the host's own network stack, with no separate internet rules.
+    // Caveat: resolvconf replaces /etc/resolv.conf atomically (rename), so a
+    // mid-session host network/VPN change is picked up on the next container
+    // start — re-run up.sh or `docker restart {{ACTIVITY_NAME}}` to refresh.
+    "source=/etc/resolv.conf,target=/etc/resolv.conf,type=bind,readonly"
   ],
   "runArgs": [
     "--name", "{{ACTIVITY_NAME}}",
