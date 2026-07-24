@@ -1,18 +1,21 @@
 # <Title>
 
 <!--
-Reference template — copy to `findings/<finding_slug>.md` and fill in every field.
-- `<finding_slug>` is short-kebab-case and shared with `poc/<finding_slug>/`.
-- Once filled, add a row to the findings index in `<activity_name>.md`.
+Reference template — `db/ptctl.py finding create` copies and initializes it.
+- Do not create finding files or edit the metadata block by hand.
+- Update canonical metadata with `db/ptctl.py finding update`.
+- Evidence inside the managed markers is rendered from the evidence registry.
 - Keep prose tight: no marketing, no CVSS narrative, no copy-pasted CWE blurbs.
 -->
 
 - **Vuln_ID**: `<finding_slug>`
+- **Group key**: `<group_key>`
 - **Severity**: `<CRITICAL | HIGH | MEDIUM | LOW | INFORMATIONAL>`
 - **Status**: `<open | fixed | non-reproducible>`
 - **Affected asset(s)**: `<host / URL / endpoint / parameter / binary — one per line if multiple>`
 - **Related CWE(s)**: `<CWE-NNN: short name>`
 - **Segment**: `<segment-name from AGENTS.md>`
+- **Observation(s)**: `<O0001, O0002>`
 
 ## Impact
 
@@ -32,9 +35,9 @@ Reference template — copy to `findings/<finding_slug>.md` and fill in every fi
 
 ## Evidence
 
-- `poc/<finding_slug>/<finding_slug>_01.png` — <what it shows>
-- `poc/<finding_slug>/req_01.http` / `res_01.http` — <what exchange it captures>
-- `poc/<finding_slug>/repro.sh` — <if a script is needed to reproduce>
+<!-- ptctl:evidence -->
+_No registered evidence yet — use `ptctl.py observation evidence`._
+<!-- /ptctl:evidence -->
 
 ## Remediation
 

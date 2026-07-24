@@ -102,6 +102,12 @@ grep -q '"BASE_IMAGE": "debian:trixie-slim"' engagement-internal/.devcontainer/d
     fail "devcontainer.json: BASE_IMAGE default 'debian:trixie-slim' not substituted"
 pass ".devcontainer/ scaffolded with all placeholders substituted (internal profile, default base)"
 
+# Canonical PT control plane is scaffolded and executable.
+test -x engagement-internal/db/ptctl.py || fail "db/ptctl.py missing or not executable"
+python3 engagement-internal/db/ptctl.py --help | grep -q observation || \
+    fail "db/ptctl.py help should expose the observation workflow"
+pass "transactional observation/finding control plane scaffolded"
+
 # --- Test 5b: explicit 'kali' base flips BASE_IMAGE to kalilinux/kali-rolling ---
 cd "$TMP"
 rm -rf engagement-kali
@@ -132,12 +138,16 @@ diff -q engagement-internal/.claude/settings.json \
     >/dev/null || fail ".claude/settings.json should be a verbatim copy of the template"
 pass ".claude/settings.json scaffolded verbatim from template"
 
-# --- Test 6b: .claude/hooks/ carries all three scripts, executable ---
-for h in log-command render-after-db check-report-format; do
+# --- Test 6b: .claude/hooks/ carries shared + Claude-only scripts, executable ---
+for h in log-command render-after-db engagement-doctor check-report-format; do
     test -x "engagement-internal/.claude/hooks/$h.sh" || \
         fail ".claude/hooks/$h.sh missing or not executable"
 done
-pass ".claude/hooks/ has all three hook scripts (shared + claude-only), executable"
+grep -q 'ptctl.py board' engagement-internal/.claude/settings.json || \
+    fail "Claude SessionStart should display the canonical PT board"
+jq -e '.hooks.Stop' engagement-internal/.claude/settings.json >/dev/null || \
+    fail "Claude settings must run the anti-drift Stop hook"
+pass ".claude/hooks/ has the board + anti-drift lifecycle hooks"
 
 # --- Test 6c: .codex/ scaffolded (config.toml + hooks.json + shared hooks) ---
 test -f engagement-internal/.codex/config.toml || fail ".codex/config.toml missing"
@@ -148,18 +158,20 @@ grep -q 'sandbox_mode *= *"danger-full-access"' engagement-internal/.codex/confi
 
 test -f engagement-internal/.codex/hooks.json || fail ".codex/hooks.json missing"
 jq -e . engagement-internal/.codex/hooks.json >/dev/null || fail ".codex/hooks.json is not valid JSON"
-jq -e '.hooks.SessionStart and .hooks.PreToolUse and .hooks.PostToolUse' \
+jq -e '.hooks.SessionStart and .hooks.PreToolUse and .hooks.PostToolUse and .hooks.Stop' \
     engagement-internal/.codex/hooks.json >/dev/null || \
-    fail ".codex/hooks.json must define SessionStart, PreToolUse, PostToolUse"
+    fail ".codex/hooks.json must define SessionStart, PreToolUse, PostToolUse, Stop"
 grep -q 'check-report-format' engagement-internal/.codex/hooks.json && \
     fail ".codex/hooks.json must NOT reference the Claude-only report-format hook"
+grep -q 'ptctl.py board' engagement-internal/.codex/hooks.json || \
+    fail "Codex SessionStart should display the canonical PT board"
 
-for h in log-command render-after-db; do
+for h in log-command render-after-db engagement-doctor; do
     test -x "engagement-internal/.codex/hooks/$h.sh" || fail ".codex/hooks/$h.sh missing or not executable"
     diff -q "engagement-internal/.codex/hooks/$h.sh" "engagement-internal/.claude/hooks/$h.sh" >/dev/null || \
         fail "$h.sh differs between .codex/ and .claude/ (should be one shared source)"
 done
-pass ".codex/ scaffolded: config.toml + hooks.json (3 hooks, no report-format) + shared scripts"
+pass ".codex/ scaffolded: board + Stop doctor + shared scripts"
 
 # --- Test 6d: .mcp.json wires the Burp MCP server for Claude (native SSE) ---
 test -f engagement-internal/.mcp.json || fail ".mcp.json missing at engagement root"

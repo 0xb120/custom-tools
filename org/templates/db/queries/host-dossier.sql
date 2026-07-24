@@ -48,7 +48,8 @@ ORDER BY hi.current DESC, hi.last_seen DESC;
 
 .print ''
 .print '-- assets --'
-SELECT a.port,
+SELECT 'A' || a.id                                                AS asset_id,
+       a.port,
        COALESCE(a.protocol, '')                                    AS protocol,
        CASE a.tls WHEN 1 THEN 'tls' WHEN 0 THEN '-' ELSE '' END     AS tls,
        COALESCE(a.version, '')                                      AS version,
@@ -106,6 +107,7 @@ WHERE a.host_id IN (
     UNION
     SELECT host_id FROM host_ip WHERE ip = :host
 )
+  AND f.lifecycle = 'confirmed'
 ORDER BY CASE f.severity
             WHEN 'CRITICAL'      THEN 1
             WHEN 'HIGH'          THEN 2

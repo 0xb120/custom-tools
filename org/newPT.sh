@@ -104,21 +104,25 @@ sed -i "s|{{ACTIVITY_NAME}}|$activity_name|g" "$activity_name"/"$activity_name".
 cp "$template_dir/AGENTS.md" "$activity_name"/AGENTS.md
 cp "$template_dir/CLAUDE.md" "$activity_name"/CLAUDE.md
 
-# Per-finding reference template — operator copies to findings/<finding_slug>.md per issue
+# Per-finding reference template — ptctl copies it atomically when promoting an observation.
 cp "$template_dir/finding.md" "$activity_name"/findings/_template.md
 
 # Kickoff notes — operator pastes raw notes here; the LLM reads them at the
 # first session to auto-populate AGENTS.md placeholders.
 cp "$template_dir/_init_notes.txt" "$activity_name"/_init_notes.txt
 
-# Engagement SQLite DB: schema + render script + saved query snippets.
-# DB is the source of truth for assets/credentials/findings metadata; the
-# markdown tables in <activity>.md are rendered from it by db/render.sh.
+# Engagement SQLite DB: schema, transactional PT registry, render script, and
+# saved query snippets. DB is the source of truth for observations, evidence,
+# assets, credentials, and finding metadata.
 mkdir -p "$activity_name/db/queries"
 cp "$template_dir/db/schema.sql"  "$activity_name/db/schema.sql"
 cp "$template_dir/db/render.sh"   "$activity_name/db/render.sh"
 cp "$template_dir/db/whatweknow.sh" "$activity_name/db/whatweknow.sh"
+cp "$template_dir/db/ptctl.py"    "$activity_name/db/ptctl.py"
 cp "$template_dir/db/queries/"*.sql "$activity_name/db/queries/"
+chmod +x "$activity_name/db/render.sh" \
+         "$activity_name/db/whatweknow.sh" \
+         "$activity_name/db/ptctl.py"
 sqlite3 "$activity_name/db/engagement.db" < "$template_dir/db/schema.sql" >/dev/null
 
 CUSTOM_TOOLS_REF="main"
@@ -164,7 +168,7 @@ cp "$template_dir/devcontainer/gitignore" "$activity_name/.devcontainer/.gitigno
 
 # .claude/ — engagement-scoped Claude Code config (verbatim copy, no placeholders).
 # settings.json wires the hooks below; hooks/ holds the scripts it calls
-# (command audit log, DB→Markdown auto-render, report-prose formatting check).
+# (command audit, DB→Markdown auto-render, report formatting, stop-time doctor).
 mkdir -p "$activity_name/.claude/hooks"
 cp "$template_dir/claude/settings.json" "$activity_name/.claude/settings.json"
 # Shared hooks (used by both Claude and Codex) live in templates/hooks/;
@@ -175,7 +179,7 @@ chmod +x "$activity_name/.claude/hooks/"*.sh
 
 # .codex/ — engagement-scoped Codex config (mirror of .claude/). config.toml
 # sets the bypass baseline; hooks.json wires the same SessionStart context
-# injection + Bash audit-log + DB-render hooks (report-format is Claude-only).
+# injection + Bash audit/render + stop-time doctor (report-format is Claude-only).
 mkdir -p "$activity_name/.codex/hooks"
 cp "$template_dir/codex/config.toml" "$activity_name/.codex/config.toml"
 cp "$template_dir/codex/hooks.json"  "$activity_name/.codex/hooks.json"
@@ -206,6 +210,8 @@ Structure for '$activity_name' created successfully.
 Next steps:
   cd $activity_name/
   \$EDITOR _init_notes.txt                      # paste kickoff notes (then ask Claude to fill AGENTS.md from them)
+  python3 db/ptctl.py board                     # canonical finding/observation status
+  python3 db/ptctl.py doctor                    # check DB / Markdown / evidence drift
   ./yolo.sh                                    # one-shot: build/start container + Claude in YOLO mode (--dangerously-skip-permissions)
   ./yolo-codex.sh                              # same, but launches Codex (--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust)
   # ...or do it by hand:

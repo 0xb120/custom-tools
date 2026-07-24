@@ -73,7 +73,8 @@ while IFS= read -r seg; do
         echo "### $seg"
         echo ""
         sqlite3 "$db" -markdown <<SQL
-SELECT h.name AS "name",
+SELECT 'A' || a.id AS "asset id",
+       h.name AS "name",
        COALESCE((SELECT ip FROM host_ip WHERE host_id = h.id AND current = 1), '') AS "current ip",
        a.port AS port,
        COALESCE(a.protocol, '') AS protocol,
@@ -119,6 +120,7 @@ SELECT 'F' || printf('%02d', f.id) AS ID,
        COALESCE(s.name, '')        AS Segment
 FROM finding f
 LEFT JOIN segment s ON s.id = f.segment_id
+WHERE f.lifecycle = 'confirmed'
 ORDER BY CASE f.severity
             WHEN 'CRITICAL'      THEN 1
             WHEN 'HIGH'          THEN 2

@@ -1,7 +1,8 @@
 -- Assets with no recorded access yet — what's still to crack / vuln-hunt.
 .mode column
 .headers on
-SELECT h.name AS host,
+SELECT 'A' || a.id AS asset_id,
+       h.name AS host,
        (SELECT ip FROM host_ip WHERE host_id = h.id AND current = 1) AS current_ip,
        a.port, a.protocol, a.version,
        s.name AS segment

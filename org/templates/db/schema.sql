@@ -1,6 +1,6 @@
--- Engagement database. Source of truth for asset inventory, credentials,
--- and finding metadata. Markdown tables in <activity>.md are rendered from
--- this DB by db/render.sh — do not edit those tables by hand.
+-- Engagement database. Source of truth for assets, credentials, observations,
+-- evidence metadata, and finding metadata. Markdown projections are rendered
+-- from this DB — do not edit those tables or managed blocks by hand.
 
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
@@ -124,16 +124,26 @@ CREATE INDEX IF NOT EXISTS idx_credential_username ON credential(username);
 -- Findings: metadata only. Full prose lives in findings/<slug>.md.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS finding (
-  id            INTEGER PRIMARY KEY,
-  slug          TEXT NOT NULL UNIQUE,       -- matches findings/<slug>.md filename
-  title         TEXT NOT NULL,
-  severity      TEXT NOT NULL CHECK (severity IN ('CRITICAL','HIGH','MEDIUM','LOW','INFORMATIONAL')),
-  status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','fixed','non-reproducible')),
-  cwe           TEXT,                       -- 'CWE-79, CWE-89'
-  segment_id    INTEGER REFERENCES segment(id),
-  evidence_path TEXT,                       -- relative path to the markdown report; auto-defaults on INSERT
-  poc_dir       TEXT,                       -- relative path to the evidence directory; auto-defaults on INSERT
-  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  id                   INTEGER PRIMARY KEY,
+  slug                 TEXT NOT NULL UNIQUE,       -- matches findings/<slug>.md filename
+  group_key            TEXT NOT NULL,              -- semantic identity: component|control|boundary|root-cause
+  title                TEXT NOT NULL,
+  severity             TEXT NOT NULL CHECK (severity IN ('CRITICAL','HIGH','MEDIUM','LOW','INFORMATIONAL')),
+  status               TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','fixed','non-reproducible')),
+  lifecycle            TEXT NOT NULL DEFAULT 'confirmed'
+                         CHECK (lifecycle IN ('draft','confirmed','merged','rejected')),
+  canonical_finding_id INTEGER REFERENCES finding(id), -- populated when lifecycle=merged
+  cwe                  TEXT,                       -- 'CWE-79, CWE-89'
+  segment_id           INTEGER NOT NULL REFERENCES segment(id),
+  evidence_path        TEXT,                       -- relative path to the markdown report; auto-defaults on INSERT
+  poc_dir              TEXT,                       -- relative path to the evidence directory; auto-defaults on INSERT
+  created_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CHECK (
+    (lifecycle = 'merged' AND canonical_finding_id IS NOT NULL)
+    OR
+    (lifecycle <> 'merged' AND canonical_finding_id IS NULL)
+  )
 );
 
 CREATE TABLE IF NOT EXISTS finding_asset (
@@ -144,6 +154,17 @@ CREATE TABLE IF NOT EXISTS finding_asset (
 
 CREATE INDEX IF NOT EXISTS idx_finding_severity ON finding(severity);
 CREATE INDEX IF NOT EXISTS idx_finding_status   ON finding(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_finding_group_key_active
+  ON finding(lower(group_key))
+  WHERE group_key IS NOT NULL AND lifecycle IN ('draft', 'confirmed');
+
+CREATE TRIGGER IF NOT EXISTS finding_touch_updated_at
+AFTER UPDATE ON finding
+FOR EACH ROW
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+  UPDATE finding SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+END;
 
 -- Auto-populate evidence_path / poc_dir from slug on INSERT, but only for the
 -- columns the operator didn't set explicitly (override stays intact).
@@ -157,3 +178,69 @@ BEGIN
       poc_dir       = COALESCE(NEW.poc_dir,       'poc/' || NEW.slug || '/')
   WHERE id = NEW.id;
 END;
+
+-- ---------------------------------------------------------------------------
+-- Observations: one row per concrete test case / occurrence. An observation is
+-- captured immediately, before deciding whether it deserves a report finding.
+-- Exact duplicate test cases collapse on `fingerprint`; several observations
+-- can then be grouped under one finding through finding_observation.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS observation (
+  id             INTEGER PRIMARY KEY,
+  fingerprint    TEXT NOT NULL UNIQUE,
+  state          TEXT NOT NULL DEFAULT 'new'
+                   CHECK (state IN ('new','validating','confirmed','linked',
+                                    'rejected','inconclusive','duplicate')),
+  family         TEXT NOT NULL,             -- BOLA / XSS / authn / business-logic / ...
+  title          TEXT NOT NULL,
+  segment_id     INTEGER NOT NULL REFERENCES segment(id),
+  asset_id       INTEGER REFERENCES asset(id),
+  component      TEXT,
+  boundary       TEXT,                      -- cross-tenant / cross-sede / vertical / ...
+  method         TEXT,
+  route          TEXT,                      -- normalized route, not a concrete object id
+  selector       TEXT,                      -- parameter / field / object selector
+  attacker_role  TEXT,
+  target_role    TEXT,
+  source         TEXT,                      -- Burp item, scanner result, journal note, manual test
+  notes          TEXT,
+  disposition    TEXT,                      -- why rejected/merged/inconclusive
+  discovered_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_observation_state   ON observation(state);
+CREATE INDEX IF NOT EXISTS idx_observation_family  ON observation(family);
+CREATE INDEX IF NOT EXISTS idx_observation_segment ON observation(segment_id);
+
+CREATE TRIGGER IF NOT EXISTS observation_touch_updated_at
+AFTER UPDATE ON observation
+FOR EACH ROW
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+  UPDATE observation SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+END;
+
+-- A concrete occurrence belongs to at most one canonical report finding.
+CREATE TABLE IF NOT EXISTS finding_observation (
+  observation_id INTEGER PRIMARY KEY REFERENCES observation(id) ON DELETE CASCADE,
+  finding_id     INTEGER NOT NULL REFERENCES finding(id) ON DELETE CASCADE,
+  linked_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_finding_observation_finding
+  ON finding_observation(finding_id);
+
+-- Evidence is immutable metadata over an on-disk artefact. It hangs from an
+-- observation, not directly from prose, so a merged finding keeps every proof.
+CREATE TABLE IF NOT EXISTS evidence (
+  id             INTEGER PRIMARY KEY,
+  observation_id INTEGER NOT NULL REFERENCES observation(id) ON DELETE CASCADE,
+  kind           TEXT NOT NULL,             -- http-request / http-response / screenshot / script / other
+  path           TEXT NOT NULL UNIQUE,      -- engagement-relative path
+  sha256         TEXT NOT NULL,
+  description    TEXT,
+  captured_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_observation ON evidence(observation_id);

@@ -63,10 +63,13 @@ Everything produced during the engagement must live under this folder, organised
 │   └── <segment>/           # e.g. web-customer-portal, external-network, internal-ad, mobile-ios
 │       └── ...              # per-tool / per-date / flat — pentester's choice inside the segment
 ├── findings/                # one structured write-up per finding
-│   ├── _template.md         # reference template — copy per new finding, do not edit in place
+│   ├── _template.md         # reference template — consumed by db/ptctl.py
 │   └── <finding_slug>.md    # schema in "Findings" section below
 ├── poc/                     # proof-of-concept artefacts, one folder per finding
 │   └── <finding_slug>/      # screenshots, HTTP exchanges, exploit scripts
+├── db/
+│   ├── engagement.db        # canonical observations, evidence, findings, assets, credentials
+│   └── ptctl.py             # only supported writer for observations/findings
 ├── logs/                    # command audit log (auto-written by a Claude hook) — git-ignored, may hold secrets
 └── wl/                      # wordlists + discovered creds — one file per type (see "Credential tracking")
 ```
@@ -99,22 +102,69 @@ How to pick segments, by engagement type:
 
 ### Findings
 
-Each finding has **three** related artefacts, all sharing the same `finding_slug`:
+There are three distinct layers. Never skip a layer and never treat a scanner hit as a report finding:
 
-| Where | What |
-|-------|------|
-| `findings/<finding_slug>.md` | Structured write-up — schema below. Source of truth. |
-| `poc/<finding_slug>/` | Evidence: screenshots, raw HTTP, repro scripts. |
-| `<activity_name>.md` (index table) | One row linking to the write-up; single place to see all findings at a glance. |
+| Layer | Identity | Purpose |
+|-------|----------|---------|
+| Lead | Tool-native result under `scans/<segment>/` | Unvalidated candidate; never appears in the report index. |
+| Observation | `O0001` row in the DB | One concrete, reproducible test case or occurrence plus registered evidence. |
+| Finding | `F01` row + `findings/<slug>.md` | Canonical report issue grouping one or more observations. |
 
-**LLM workflow** (every new confirmed vulnerability):
+`db/ptctl.py` is the only supported writer for observations and findings. It updates the DB, Markdown metadata, evidence block, PoC directory, and rendered index as one workflow. Do not `INSERT` findings with raw SQL, copy `_template.md`, create a standalone finding write-up, or edit managed metadata/evidence blocks by hand.
 
-1. Copy `findings/_template.md` to `findings/<finding_slug>.md` and fill in every field per the schema below.
-2. Drop evidence into `poc/<finding_slug>/`.
-3. INSERT a row into the `finding` table in `db/engagement.db` (the `evidence_path` and `poc_dir` columns auto-default from `slug` — see § Engagement database for the snippet).
-4. Run `bash db/render.sh` to refresh the findings index in `<activity_name>.md`.
+**Capture immediately.** As soon as a plausible security issue appears, register the concrete occurrence before continuing exploration:
 
-Do all four in the same session. The DB row holds the structured metadata (severity, status, segment, paths); the per-finding `.md` holds the prose. Both must exist for the same `slug`. **Never edit the rendered findings index by hand** — it's regenerated from the DB on every render.
+```bash
+python3 db/ptctl.py observation add \
+  --title 'Cross-tenant read through orderId' \
+  --family BOLA --segment customer-portal \
+  --asset A1 \
+  --component orders-api --boundary cross-tenant \
+  --method GET --route '/api/orders/:id' --selector orderId \
+  --attacker-role customer --target-role customer \
+  --source 'Burp Repeater item 1842' \
+  --evidence scans/customer-portal/burp/req-1842.http \
+  --evidence scans/customer-portal/burp/res-1842.http
+```
+
+Repeating the same semantic test case returns the existing `O####`; it does not create a duplicate. Common family aliases are canonicalized (`IDOR` and `BOLA` become the same family). Tool output can remain a lead, but once an agent manually relies on a result it must either register an observation or explicitly record why it was rejected.
+
+When the affected service exists in the asset inventory, pass its identity from the rendered **asset id** column (`A1`, `A2`, …). `ptctl.py` then derives the finding's `finding_asset` links and **Affected asset(s)** metadata from its observations. Add an extra asset not represented by an observation, or remove one no longer applicable, with `python3 db/ptctl.py finding asset F01 --add A2` / `--remove A2`; an asset referenced by a linked observation cannot be removed.
+
+**Promote only after confirmation.** A finding requires at least one observation with registered evidence:
+
+```bash
+python3 db/ptctl.py finding create \
+  --slug cross-tenant-order-access \
+  --group-key 'orders-api|object-authorization|cross-tenant' \
+  --title 'Cross-tenant access to orders' --severity HIGH \
+  --cwe 'CWE-639' --segment customer-portal \
+  --observation O0001
+```
+
+The `group_key` is the finding's semantic identity. Group occurrences when they have the same violated security control, trust boundary/root cause, and remediation owner. Different endpoints, object types, parameters, or JSON fields are usually additional observations, not additional findings:
+
+```bash
+python3 db/ptctl.py finding attach F01 --observation O0002
+```
+
+Do not group solely because two issues share a CWE. Keep them separate when the authorization boundary, exploit preconditions, impact, root cause, or required fix materially differs. The DB enforces one active finding per exact `group_key`; `ptctl.py` also flags an existing finding when its observations share the same `segment + family + component + boundary`, catching synonymous keys. If creation is rejected, inspect the candidate and attach to it. Use `--allow-related` only when the root cause/remediation is genuinely different and record that decision in `journal.md`.
+
+Use the control plane for later changes and consolidation:
+
+```bash
+python3 db/ptctl.py finding update F01 --severity MEDIUM --status open
+python3 db/ptctl.py finding merge F07 --into F01
+python3 db/ptctl.py board
+python3 db/ptctl.py doctor
+```
+
+`finding merge` retains the old write-up and PoC directory as audit history, moves every occurrence to the canonical finding, and removes the merged issue from the rendered index. `doctor` detects missing write-ups/PoCs, unmanaged files, DB↔Markdown/index drift, missing or modified evidence, and observations left in an inconsistent state. A stop hook runs the check automatically: structural errors, observations still in transient `new` state, and journal `#observation` lines without an `O####`/`F##` reference block the agent from ending the session. Before stopping, every observation must therefore be linked, rejected/inconclusive with a reason, or explicitly moved to `validating` for follow-up.
+
+```bash
+python3 db/ptctl.py observation state O0005 validating
+python3 db/ptctl.py observation state O0006 rejected --reason 'scanner false positive: reflected only in JSON'
+```
 
 #### Prose formatting
 
@@ -128,21 +178,24 @@ All report prose — finding write-ups, the executive summary, any text destined
 Each file must ALWAYS include:
 
 - Vuln_ID (`finding_slug`)
+- Group key (semantic identity used for deduplication)
 - Title
 - Severity (Critical / High / Medium / Low / Informational — see scale below)
 - Status (`open` / `fixed` / `non-reproducible`)
 - Affected asset(s)
 - Related CWE(s)
+- Segment
+- Observation IDs (`O####`)
 - Impact summary (very short and high level, two or three lines max)
 - Description
 - Reproduction steps
-- Evidence (links to `poc/<finding_slug>/`)
+- Evidence (registered files under `poc/<finding_slug>/` or the relevant `scans/<segment>/` path)
 - Remediation
 - References (list of links)
 
 #### Findings index (`<activity_name>.md`)
 
-Rendered from `db/engagement.db` (`finding` table) by `bash db/render.sh`, between the `<!-- db:render findings -->` markers. **Never edit this table by hand** — re-run render after every INSERT/UPDATE.
+Rendered from `db/engagement.db` (`finding` table) by `ptctl.py`/`db/render.sh`, between the `<!-- db:render findings -->` markers. **Never edit this table by hand**.
 
 Output shape:
 
@@ -201,7 +254,7 @@ Although not inherently dangerous, addressing these kinds of issues improves the
 
 ### Engagement database
 
-`db/engagement.db` (SQLite) is the source of truth for **assets**, **credentials**, and **finding metadata**. The markdown tables in `<activity_name>.md` are rendered from the DB by `db/render.sh` between `<!-- db:render <block> -->` markers — never edit those tables by hand.
+`db/engagement.db` (SQLite) is the source of truth for **assets**, **credentials**, **observations**, **evidence metadata**, and **finding metadata**. The markdown tables in `<activity_name>.md` are rendered from the DB by `db/render.sh` between `<!-- db:render <block> -->` markers — never edit those tables by hand.
 
 What lives where:
 
@@ -210,9 +263,11 @@ What lives where:
 | Host map (name↔IP) | DB (`host`, `host_ip`, `host_segment`) | `<activity_name>.md` § Host inventory |
 | Asset inventory | DB (`host`, `host_ip`, `asset`, `host_segment`) | `<activity_name>.md` § Asset inventory |
 | Valid credentials | DB (`credential`, `credential_asset`) | `<activity_name>.md` § Valid credentials |
-| Finding metadata | DB (`finding`, `finding_asset`) | `<activity_name>.md` § Findings index |
+| Observations | DB (`observation`) | `db/ptctl.py board` |
+| Evidence registry | DB (`evidence`) + immutable engagement-relative files | Managed block in each finding |
+| Finding metadata/grouping | DB (`finding`, `finding_observation`, `finding_asset`) | `<activity_name>.md` § Findings index |
 | Finding prose | `findings/<slug>.md` (markdown) — DB row's `evidence_path` points here | — |
-| Finding evidence | `poc/<slug>/` (screenshots, http, repro) — DB row's `poc_dir` points here | — |
+| Curated finding evidence | `poc/<slug>/` — registered through `ptctl.py observation evidence` | Managed block in finding prose |
 | Wordlists (raw) | `wl/*.txt` (one file per type) — optionally referenced by `credential.source_path` | — |
 
 **Common writes** (operator and agent run these as needed):
@@ -258,21 +313,8 @@ sqlite3 db/engagement.db "
             CURRENT_TIMESTAMP);"
 sqlite3 db/engagement.db "UPDATE asset SET access='admin' WHERE host_id=(SELECT id FROM host WHERE name='DC01') AND port=445;"
 
-# Index a new finding (prose still lives in findings/<slug>.md).
-# evidence_path defaults to 'findings/<slug>.md' and poc_dir to 'poc/<slug>/'
-# automatically on INSERT — override explicitly only if the report lives elsewhere.
-sqlite3 db/engagement.db "INSERT INTO finding
-  (slug, title, severity, status, cwe, segment_id)
-  VALUES ('reflected-xss-search', 'Reflected XSS on /search',
-          'CRITICAL', 'open', 'CWE-79',
-          (SELECT id FROM segment WHERE name='customer-portal'));"
-
-# Override evidence_path explicitly when the report lives outside findings/:
-sqlite3 db/engagement.db "INSERT INTO finding
-  (slug, title, severity, evidence_path, segment_id)
-  VALUES ('q2-summary', 'Q2 cumulative summary', 'INFORMATIONAL',
-          'reports/2026Q2/summary.md',
-          (SELECT id FROM segment WHERE name='customer-portal'));"
+# Findings and observations are deliberately absent from the raw-SQL examples.
+# Use `python3 db/ptctl.py --help`; it keeps DB, prose, evidence, PoC, and index coherent.
 ```
 
 **Common reads** — saved snippets under `db/queries/`:
@@ -290,7 +332,9 @@ Run any of them with `sqlite3 db/engagement.db < db/queries/<name>.sql`.
 
 **What do we know about one machine?** `bash db/whatweknow.sh <name-or-ip>` folds the DB dossier (`host-dossier.sql`), journal entries, and raw `scans/` output into a single machine-centric view — across the machine's full token set: its `name`, `dns`, and every IP it has ever held. So a scan captured under a now-retired DHCP IP still surfaces when you query by the stable name.
 
-**Refresh the markdown view**: `bash db/render.sh` — re-run after each batch of writes and before committing.
+**Check the engagement state**: `python3 db/ptctl.py board`.
+
+**Validate all invariants**: `python3 db/ptctl.py doctor` before committing or handing off; use `--strict` at reporting freeze, when no unresolved warnings may remain. `ptctl.py finding ...` renders the Markdown index automatically; use `bash db/render.sh` only after raw asset/credential writes.
 
 ### Asset tracking
 
@@ -344,7 +388,7 @@ LLM workflow (every session):
 1. Read `TODO.md` first; load open items (`- [ ]`) into the in-session task tracker.
 2. When new tasks emerge during work, append them to `TODO.md` under the right segment immediately.
 3. Flip `- [ ]` → `- [x]` as soon as a task is done; add a short trailing note if context matters (`- [x] enumerate subdomains — found 47, see scans/external-network/subfinder/`).
-4. Findings, observations, hypotheses, dead-ends → `journal.md`. Not here.
+4. Hypotheses, dead-ends, and decisions → `journal.md`. Concrete security observations must first receive an `O####` through `ptctl.py`; reference that ID in the journal. Findings are managed by `ptctl.py`, not TODO items.
 
 ### Working journal
 
@@ -354,6 +398,7 @@ Format:
 
 - Date headers `## YYYY-MM-DD`, one per active day.
 - Free-form entries underneath, tagged inline for retrieval: `#observation`, `#hypothesis`, `#dead-end`, `#decision`.
+- Every `#observation` entry includes its canonical `O####` or `F##` reference. If no ID exists yet, create the observation before writing the journal entry.
 - Tag the machine an entry concerns with `@<name>` — the stable host name (fall back to `@<ip>` only when the name isn't known yet; `whatweknow.sh` expands either to the machine's full alias set). This is the journal's host index — `grep '@DC01' journal.md` reconstructs that machine's full analysis history in one shot.
 - Entries are immutable. To update or close one, append a new dated entry that references the original (don't edit in place).
 - When an entry implies a follow-up action, log the observation here AND create a `- [ ]` item in `TODO.md` (cross-reference by short description).

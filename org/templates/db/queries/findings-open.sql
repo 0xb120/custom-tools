@@ -8,6 +8,7 @@ SELECT f.slug,
 FROM finding f
 LEFT JOIN segment s ON s.id = f.segment_id
 WHERE f.status = 'open'
+  AND f.lifecycle = 'confirmed'
 ORDER BY CASE f.severity
             WHEN 'CRITICAL'      THEN 1
             WHEN 'HIGH'          THEN 2
