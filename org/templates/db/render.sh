@@ -60,7 +60,7 @@ ORDER BY h.name;
 SQL
 echo "" >> "$hosts_md"
 [ "$(sqlite3 "$db" "SELECT COUNT(*) FROM host;")" -gt 0 ] || \
-    printf '\n_No hosts recorded yet — see AGENTS.md § Engagement database for write snippets._\n' > "$hosts_md"
+    printf '\n_No hosts recorded yet — see PT_PLAYBOOK.md § Engagement database for inventory commands._\n' > "$hosts_md"
 
 assets_md="$tmpdir/assets.md"
 : > "$assets_md"
@@ -91,7 +91,7 @@ ORDER BY h.name, a.port;
 SQL
     } >> "$assets_md"
 done
-[ -s "$assets_md" ] || echo $'\n_No assets recorded yet — see AGENTS.md § Engagement database for write snippets._' > "$assets_md"
+[ -s "$assets_md" ] || echo $'\n_No assets recorded yet — see PT_PLAYBOOK.md § Engagement database for inventory commands._' > "$assets_md"
 
 credentials_md="$tmpdir/credentials.md"
 echo "" > "$credentials_md"

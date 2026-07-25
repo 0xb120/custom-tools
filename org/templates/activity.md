@@ -4,7 +4,7 @@
 
 ## Host inventory
 
-Source of truth: `db/engagement.db` (`host` + `host_ip` + `host_segment`). The DHCP-stable name↔IP map — rendered by `bash db/render.sh`. See `AGENTS.md` § Engagement database.
+Source of truth: `db/engagement.db` (`host` + `host_ip` + `host_segment`). The DHCP-stable name↔IP map is rendered by `bash db/render.sh`. See `PT_PLAYBOOK.md` § Engagement database for inventory commands.
 
 <!-- db:render hosts -->
 
@@ -16,7 +16,7 @@ Source of truth: `db/engagement.db` (`host` + `host_ip` + `host_segment`). The D
 
 ## Asset inventory
 
-Source of truth: `db/engagement.db` (`asset` + `host` + `host_segment`). Rendered by `bash db/render.sh` — see `AGENTS.md` § Engagement database for write/read snippets.
+Source of truth: `db/engagement.db` (`asset` + `host` + `host_segment`). Rendered by `bash db/render.sh`; see `PT_PLAYBOOK.md` § Engagement database for inventory commands and saved queries.
 
 <!-- db:render assets -->
 
@@ -44,7 +44,7 @@ Source of truth: `db/engagement.db` (`credential` + `credential_asset`). Rendere
 
 ## Findings index
 
-Source of truth: `db/engagement.db` (`finding`). Rendered by `bash db/render.sh`. Per-finding prose stays in `findings/<finding_slug>.md`.
+Source of truth: `db/engagement.db` (`finding`). Finding commands render this index automatically; `bash db/render.sh` refreshes it after raw inventory writes. Per-finding prose stays in `findings/<finding_slug>.md`.
 
 <!-- db:render findings -->
 

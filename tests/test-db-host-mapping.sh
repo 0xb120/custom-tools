@@ -209,7 +209,7 @@ grep -q "445"  "$TMP/assets.block" || fail "assets block should list port 445"
 pass "render.sh emits hosts map + host-keyed asset table"
 
 # ===========================================================================
-# Section F — AGENTS.md docs describe the host model, not the dropped one (Task 6)
+# Section F — always-on rules describe the host model, not the dropped one
 # ===========================================================================
 AGENT="$ROOT/org/templates/AGENTS.md"
 grep -q "asset_segment" "$AGENT" && fail "AGENTS.md still references the removed asset_segment table"
@@ -221,21 +221,21 @@ grep -q "target by name"           "$AGENT" || fail "AGENTS.md should tell the m
 pass "AGENTS.md documents the host-identity model"
 
 # ===========================================================================
-# Section G — the documented "Common writes" snippets execute and link rows
+# Section G — the on-demand playbook's "Common writes" execute and link rows
 # (regression guard for last_insert_rowid() being 0 across separate sqlite3
 # processes — it silently produced host_id=0 / credential_id=0 orphans). (Task 6)
 # ===========================================================================
 cd "$TMP"
 rm -rf eng-g
 bash "$NEWPT" none eng-g >/dev/null || fail "scaffold eng-g failed"
-AGENT="$ROOT/org/templates/AGENTS.md"
+PLAYBOOK="$ROOT/org/templates/PT_PLAYBOOK.md"
 # Extract the bash code fences in the "Common writes" subsection.
 awk '/\*\*Common writes\*\*/{insec=1}
      /\*\*Common reads\*\*/{insec=0}
      insec && /^```bash$/{inblk=1; next}
      insec && /^```$/{inblk=0}
-     insec && inblk{print}' "$AGENT" > "$TMP/writes.sh"
-[ -s "$TMP/writes.sh" ] || fail "could not extract Common writes snippets from AGENTS.md"
+     insec && inblk{print}' "$PLAYBOOK" > "$TMP/writes.sh"
+[ -s "$TMP/writes.sh" ] || fail "could not extract Common writes snippets from PT_PLAYBOOK.md"
 ( cd eng-g && bash -e "$TMP/writes.sh" ) || fail "documented Common writes snippets errored when executed"
 gdb="eng-g/db/engagement.db"
 [ "$(sqlite3 "$gdb" "SELECT COUNT(*) FROM host_ip WHERE host_id NOT IN (SELECT id FROM host);")" = 0 ] \
@@ -246,6 +246,6 @@ gdb="eng-g/db/engagement.db"
     || fail "expected the documented DC01:445 asset to exist"
 [ "$(sqlite3 "$gdb" "SELECT COUNT(*) FROM credential_asset;")" -ge 1 ] \
     || fail "expected at least one credential linked to an asset"
-pass "AGENTS.md Common writes snippets execute and link rows correctly (no last_insert_rowid orphans)"
+pass "PT_PLAYBOOK.md writes execute and link rows correctly (no last_insert_rowid orphans)"
 
 echo "All tests passed."

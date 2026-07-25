@@ -1,3 +1,3 @@
 # CLAUDE.md
 
-Engagement-specific instructions live in **[AGENTS.md](./AGENTS.md)** — read that file first. It defines scope, testing windows, credentials handling, and the artifact-storage rules for this engagement.
+Hard engagement rules live in **[AGENTS.md](./AGENTS.md)** and are bridged into Claude's bounded session bootstrap. Use `db/ptctl.py context ...` for progressive retrieval; do not preload `PT_PLAYBOOK.md`, journal prose, finding prose, or evidence.

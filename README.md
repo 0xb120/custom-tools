@@ -1,8 +1,11 @@
 # Custom Tools
 
-Collection of custom scripts for penetration testing and bug bounty automation. Covers the full workflow from scope ingestion to vulnerability reporting.
+Collection of scripts and engagement scaffolding for penetration testing and bug bounty work. The repository has two main entry points:
 
-Planned features and their design notes live in [`ROADMAP.md`](ROADMAP.md).
+- [`org/newPT.sh`](org/newPT.sh) creates a reproducible, agent-assisted engagement workspace with a canonical SQLite registry, evidence controls, progressive context loading, and Claude/Codex lifecycle hooks.
+- [`utils/recon/recon-orchestrator.sh`](utils/recon/recon-orchestrator.sh) runs the reconnaissance pipeline from scope expansion through per-application analysis and takeover checks.
+
+See [`org/README.md`](org/README.md) for engagement setup and [`utils/recon/README.md`](utils/recon/README.md) for the reconnaissance workers. Planned work and design history live in [`ROADMAP.md`](ROADMAP.md) and [`docs/superpowers/`](docs/superpowers/).
 
 ---
 
@@ -10,17 +13,21 @@ Planned features and their design notes live in [`ROADMAP.md`](ROADMAP.md).
 
 | Directory | Purpose |
 |-----------|---------|
-| `recon/` | Core reconnaissance and vulnerability scanning pipeline |
-| `org/` | Tool installation, project scaffolding, configuration backups |
+| `org/` | Tool installation, engagement scaffolding, agent configuration, and PT control-plane templates |
+| `utils/recon/` | Core reconnaissance and vulnerability scanning pipeline |
+| `utils/wl/` | Password and username wordlist generators |
+| `utils/` | Standalone file comparison and media conversion helpers |
 | `poc/` | Proof-of-concept payloads (XSS, clickjacking, CORS) |
-| `ssh-tools/` | SSH reverse tunnel utilities for bastion access |
-| `utils/` | Wordlist generators for password and username spraying |
+| `tests/` | Scaffold, registry, context-router, and installer regression tests |
+| `docs/superpowers/` | Feature design notes and implementation plans |
 
 ---
 
-## Reconnaissance Pipeline (`recon/`)
+## Reconnaissance Pipeline (`utils/recon/`)
 
-`recon-orchestrator.sh` is the top-level driver — it stages output under `/scans/<scan_id>/`, kicks off Stage 1 takeover in the background, then runs `surfagr.sh` (clustering + screenshots), dispatches `pipeline-recon.sh` and `pipeline-subenum.sh` in parallel across apps via two concurrent `xargs -P 3` invocations, and finally fires Stage 2 takeover per-app. Every worker below can also be run standalone.
+The commands in this section assume `cd utils` first. The dedicated [`utils/recon/README.md`](utils/recon/README.md) and [`utils/recon/PIPELINE.md`](utils/recon/PIPELINE.md) contain the maintained worker and DAG documentation.
+
+`recon-orchestrator.sh` is the top-level driver — it stages output under `./scans/<scan_id>/`, kicks off Stage 1 takeover in the background, then runs `surfagr.sh` (clustering + screenshots), dispatches `pipeline-recon.sh` and `pipeline-subenum.sh` in parallel across apps via two concurrent `xargs -P 3` invocations, and finally fires Stage 2 takeover per-app. Every worker below can also be run standalone.
 
 ```
 recon-orchestrator.sh
@@ -35,13 +42,13 @@ recon-orchestrator.sh
 
 ### `recon-orchestrator.sh` — End-to-End Engagement Driver
 
-Top-level entry point. Stages all output under `/scans/<scan_id>/`, manages parallel pipeline dispatch, waits for all background tasks before exiting.
+Top-level entry point. Stages all output under `./scans/<scan_id>/`, manages parallel pipeline dispatch, waits for all background tasks before exiting.
 
 ```bash
 ./recon/recon-orchestrator.sh <scan_id> <scope_file>
 ```
 
-Requires `/scans/` to be writable (or change `BASE` at the top of the script).
+Requires `./scans/` to be writable.
 
 ---
 
@@ -180,55 +187,57 @@ Runs `feroxbuster` recursively (depth 3) against a target using SecLists `common
 
 ## Organization Scripts (`org/`)
 
-### `install-offsec-tools.sh` — Tool Installer
-
-Installs the full penetration testing toolkit. Modules:
-- **Base**: `git`, `curl`, `jq`, `tmux`, `docker`, Go 1.24.4, etc.
-- **Project Discovery**: `httpx`, `dnsx`, `tlsx`, `naabu`, `nuclei`, `katana`, `subfinder`, `shuffledns`, `urlfinder`
-- **Praetorian**: `fingerprintx`, `nerva`, `julius`, `brutus`, `augustus`, `titus`
-- **Tom Nomnom**: `unfurl`, `assetfinder`, `anew`, `qsreplace`
-- **Takeover**: `subjack`
+The complete operator guide is [`org/README.md`](org/README.md). The common paths are:
 
 ```bash
-./org/install-offsec-tools.sh <install_directory>
+# Create a web engagement on the default Debian base.
+./org/newPT.sh web client-acme
+
+# Create only the workspace and devcontainer, without installing a toolchain.
+./org/newPT.sh none report-only
+
+# Install selected tool groups on a host.
+sudo bash org/install-offsec-tools.sh --groups=base,recon,AI /opt
 ```
 
-### `newPT.sh` — Project Scaffolding
-
-Creates a standardized engagement directory structure: `attachments/`, `scans/`, `poc/`, `wl/`, `scope.txt`, and a Markdown notes file.
+`newPT.sh` accepts:
 
 ```bash
-./org/newPT.sh
+./org/newPT.sh <web|external|internal|cloud|mobile|full|lite|none> \
+  <activity_name> [debian|kali]
 ```
 
-### `comparer.py` — File Differ
+Each generated workspace contains:
 
-Compares two files line by line and prints lines unique to each. Useful for scope diffs or deduplicating wordlists.
+- `AGENTS.md` for small, always-on engagement boundaries and `PT_PLAYBOOK.md` for on-demand reference material;
+- `db/engagement.db` plus `db/ptctl.py`, the canonical observation/finding/evidence control plane;
+- `.context/handoff.md` and a content-based `scans/`/`poc/` delta baseline;
+- `.claude/` and `.codex/` hooks for bounded session bootstrap, command logging, DB rendering, and stop-time consistency checks;
+- a devcontainer, Claude/Codex launchers, and a pre-wired Burp MCP endpoint.
 
-```bash
-python3 org/comparer.py file1.txt file2.txt
-```
-
-### `webm2gif.sh` — Screen Recording Converter
-
-Converts `.webm` screen recordings to `.gif` for PoC attachments.
+At session start the hooks load compact scope, handoff, registry counts, and open task titles. Historical journal prose, finding prose, evidence bodies, and the full registry remain excluded until explicitly requested:
 
 ```bash
-./org/webm2gif.sh recording.webm
+python3 db/ptctl.py context focus --topic 'orders authorization'
+python3 db/ptctl.py context history --topic 'orders authorization'
+python3 db/ptctl.py context resume F01
+python3 db/ptctl.py session delta
 ```
 
 ---
 
-## Wordlist Generators (`utils/`)
+## Utilities (`utils/`)
 
 ### `gen-pwd-wl.sh` — Password Wordlist
 
 Generates a target-specific password list from a customer label and hostname. Produces variants with the current year (±10 years), capitalization, and common symbols, plus default passwords (`admin`, `P@ssword!`, etc.).
 
 ```bash
-./utils/gen-pwd-wl.sh <customer_label> <hostname>
+./utils/wl/gen-pwd-wl.sh <customer_label> <hostname>
 # Output: /tmp/wordlists/
 ```
+
+`utils/wl/gen-user-wl.sh` generates username candidates. `utils/comparer.py` compares two files line by line, and `utils/webm2gif.sh` converts a WebM recording into a GIF.
 
 ---
 
@@ -243,3 +252,23 @@ Ready-to-use HTML/SVG payloads for common web vulnerabilities:
 | `svg-xss.svg` | SVG XSS |
 | `clickjacking.html` | Clickjacking |
 | `csd.html`, `csd2.html` | CORS / SOP bypass |
+
+---
+
+## Tests
+
+Run the repository-level regression suites from the repository root:
+
+```bash
+bash tests/test-newPT.sh
+bash tests/test-db-host-mapping.sh
+bash tests/test-finding-workflow.sh
+bash tests/test-context-router.sh
+bash tests/test-install-offsec-tools.sh
+```
+
+The reconnaissance contract and Dagu suites have their own runner:
+
+```bash
+bash utils/recon/tests/run.sh
+```

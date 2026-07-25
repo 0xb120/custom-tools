@@ -100,8 +100,9 @@ touch "$activity_name"/TODO.md
 cp "$template_dir/activity.md" "$activity_name"/"$activity_name".md
 sed -i "s|{{ACTIVITY_NAME}}|$activity_name|g" "$activity_name"/"$activity_name".md
 
-# Drop in the engagement-level AGENTS.md (rules + scaffolding) and CLAUDE.md (pointer)
+# Drop in the small always-on rules, on-demand playbook, and Claude pointer.
 cp "$template_dir/AGENTS.md" "$activity_name"/AGENTS.md
+cp "$template_dir/PT_PLAYBOOK.md" "$activity_name"/PT_PLAYBOOK.md
 cp "$template_dir/CLAUDE.md" "$activity_name"/CLAUDE.md
 
 # Per-finding reference template — ptctl copies it atomically when promoting an observation.
@@ -178,8 +179,8 @@ cp "$template_dir/claude/hooks/"*.sh "$activity_name/.claude/hooks/"
 chmod +x "$activity_name/.claude/hooks/"*.sh
 
 # .codex/ — engagement-scoped Codex config (mirror of .claude/). config.toml
-# sets the bypass baseline; hooks.json wires the same SessionStart context
-# injection + Bash audit/render + stop-time doctor (report-format is Claude-only).
+# sets the bypass baseline; hooks.json wires bounded SessionStart context
+# (without duplicating native AGENTS.md) + audit/render + stop-time checks.
 mkdir -p "$activity_name/.codex/hooks"
 cp "$template_dir/codex/config.toml" "$activity_name/.codex/config.toml"
 cp "$template_dir/codex/hooks.json"  "$activity_name/.codex/hooks.json"
@@ -197,6 +198,29 @@ sed -i "s|{{BURP_MCP_URL}}|$BURP_MCP_URL|g" \
     "$activity_name/.devcontainer/up.sh" \
     "$activity_name/.devcontainer/devcontainer.json"
 
+# Initialize the compact handoff last. Its mtime is the session-check baseline,
+# so it must be newer than the freshly created DB, TODO, journal, and report.
+mkdir -p "$activity_name/.context"
+cp "$template_dir/context/handoff.md" "$activity_name/.context/handoff.md"
+cp "$template_dir/context/state.json" "$activity_name/.context/state.json"
+cp "$template_dir/context/gitignore" "$activity_name/.context/.gitignore"
+(
+    cd "$activity_name"
+    python3 db/ptctl.py session close \
+        --focus 'Engagement initialization' \
+        --outcome administrative \
+        --assessment 'engagement scaffold initialization' \
+        --completed 'Engagement scaffold created' \
+        --blocker 'Scope and engagement placeholders may still need operator input' \
+        --next 'Fill AGENTS.md, scope.txt, and out-of-scope.txt from authorized kickoff material' \
+        --next 'Define segments in db/engagement.db' \
+        --reference AGENTS.md \
+        --reference scope.txt >/dev/null
+) || {
+    echo "ERROR: could not initialize the session delta baseline" >&2
+    exit 1
+}
+
 cat <<EOF
 
 Structure for '$activity_name' created successfully.
@@ -210,7 +234,9 @@ Structure for '$activity_name' created successfully.
 Next steps:
   cd $activity_name/
   \$EDITOR _init_notes.txt                      # paste kickoff notes (then ask Claude to fill AGENTS.md from them)
-  python3 db/ptctl.py board                     # canonical finding/observation status
+  python3 db/ptctl.py context explain           # audit the small session bootstrap
+  python3 db/ptctl.py context pending           # list all open work on demand
+  python3 db/ptctl.py board                     # full canonical registry, on demand
   python3 db/ptctl.py doctor                    # check DB / Markdown / evidence drift
   ./yolo.sh                                    # one-shot: build/start container + Claude in YOLO mode (--dangerously-skip-permissions)
   ./yolo-codex.sh                              # same, but launches Codex (--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust)

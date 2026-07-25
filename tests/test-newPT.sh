@@ -106,7 +106,29 @@ pass ".devcontainer/ scaffolded with all placeholders substituted (internal prof
 test -x engagement-internal/db/ptctl.py || fail "db/ptctl.py missing or not executable"
 python3 engagement-internal/db/ptctl.py --help | grep -q observation || \
     fail "db/ptctl.py help should expose the observation workflow"
-pass "transactional observation/finding control plane scaffolded"
+python3 engagement-internal/db/ptctl.py --help | grep -q context || \
+    fail "db/ptctl.py help should expose progressive context"
+test -f engagement-internal/PT_PLAYBOOK.md || fail "on-demand PT_PLAYBOOK.md missing"
+test -f engagement-internal/.context/handoff.md || fail "initial session handoff missing"
+test -f engagement-internal/.context/state.json || fail "initial session delta state missing"
+grep -qx 'active.json' engagement-internal/.context/.gitignore || \
+    fail "ephemeral active session marker should be git-ignored"
+jq -e '.version == 1 and .artifacts == {}' \
+    engagement-internal/.context/state.json >/dev/null || \
+    fail "initial session delta state is invalid"
+[ "$(wc -c < engagement-internal/AGENTS.md)" -lt 12000 ] || \
+    fail "always-on AGENTS.md should remain below 12 KB"
+python3 engagement-internal/db/ptctl.py session check >/dev/null || \
+    fail "fresh scaffold handoff should be current"
+fresh_boot="$(python3 engagement-internal/db/ptctl.py context boot)"
+grep -q 'Freshness.*current' <<<"$fresh_boot" || \
+    fail "fresh scaffold boot should mark the handoff current"
+grep -q 'STALE' <<<"$fresh_boot" && \
+    fail "fresh scaffold boot should not report a stale handoff"
+python3 engagement-internal/db/ptctl.py session delta | \
+    grep -q 'Capture gate: not required' || \
+    fail "fresh scaffold should have no capture gate"
+pass "transactional PT control plane and compact initial context scaffolded"
 
 # --- Test 5b: explicit 'kali' base flips BASE_IMAGE to kalilinux/kali-rolling ---
 cd "$TMP"
@@ -143,11 +165,15 @@ for h in log-command render-after-db engagement-doctor check-report-format; do
     test -x "engagement-internal/.claude/hooks/$h.sh" || \
         fail ".claude/hooks/$h.sh missing or not executable"
 done
-grep -q 'ptctl.py board' engagement-internal/.claude/settings.json || \
-    fail "Claude SessionStart should display the canonical PT board"
+grep -q 'context boot --include-rules --max-chars 16000' engagement-internal/.claude/settings.json || \
+    fail "Claude SessionStart should bridge bounded hard rules"
+grep -q 'session start --client claude --quiet' engagement-internal/.claude/settings.json || \
+    fail "Claude SessionStart should open the capture gate"
+grep -q 'journal.md\\|ptctl.py board\\|cat /workspace/TODO.md' engagement-internal/.claude/settings.json && \
+    fail "Claude SessionStart must not preload journal, full TODO, or board"
 jq -e '.hooks.Stop' engagement-internal/.claude/settings.json >/dev/null || \
     fail "Claude settings must run the anti-drift Stop hook"
-pass ".claude/hooks/ has the board + anti-drift lifecycle hooks"
+pass ".claude/hooks/ has bounded boot + anti-drift lifecycle hooks"
 
 # --- Test 6c: .codex/ scaffolded (config.toml + hooks.json + shared hooks) ---
 test -f engagement-internal/.codex/config.toml || fail ".codex/config.toml missing"
@@ -163,15 +189,21 @@ jq -e '.hooks.SessionStart and .hooks.PreToolUse and .hooks.PostToolUse and .hoo
     fail ".codex/hooks.json must define SessionStart, PreToolUse, PostToolUse, Stop"
 grep -q 'check-report-format' engagement-internal/.codex/hooks.json && \
     fail ".codex/hooks.json must NOT reference the Claude-only report-format hook"
-grep -q 'ptctl.py board' engagement-internal/.codex/hooks.json || \
-    fail "Codex SessionStart should display the canonical PT board"
+grep -q 'context boot --max-chars 16000' engagement-internal/.codex/hooks.json || \
+    fail "Codex SessionStart should load bounded context"
+grep -q 'session start --client codex --quiet' engagement-internal/.codex/hooks.json || \
+    fail "Codex SessionStart should open the capture gate"
+grep -q -- '--include-rules' engagement-internal/.codex/hooks.json && \
+    fail "Codex SessionStart must not duplicate native AGENTS.md"
+grep -q 'journal.md\\|ptctl.py board\\|cat /workspace/TODO.md' engagement-internal/.codex/hooks.json && \
+    fail "Codex SessionStart must not preload journal, full TODO, or board"
 
 for h in log-command render-after-db engagement-doctor; do
     test -x "engagement-internal/.codex/hooks/$h.sh" || fail ".codex/hooks/$h.sh missing or not executable"
     diff -q "engagement-internal/.codex/hooks/$h.sh" "engagement-internal/.claude/hooks/$h.sh" >/dev/null || \
         fail "$h.sh differs between .codex/ and .claude/ (should be one shared source)"
 done
-pass ".codex/ scaffolded: board + Stop doctor + shared scripts"
+pass ".codex/ scaffolded: native rules + bounded boot + shared Stop checks"
 
 # --- Test 6d: .mcp.json wires the Burp MCP server for Claude (native SSE) ---
 test -f engagement-internal/.mcp.json || fail ".mcp.json missing at engagement root"

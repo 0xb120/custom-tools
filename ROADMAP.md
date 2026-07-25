@@ -54,9 +54,34 @@ Status legend: `idea` (needs design) · `ready` (design agreed, can build) · `i
 
 ---
 
+## 4. Progressive context and bounded session handoff
+
+**Status:** `in-progress` · **Size:** M · **Area:** `org/templates/`, `org/newPT.sh`
+
+**Motivation.** The old SessionStart hook preloaded all of `AGENTS.md`, `TODO.md`, recent journal prose, and the full finding board. That consumed context, biased new investigations toward old conclusions, and still did not guarantee that tool-generated `scans/`/`poc/` artifacts were captured or assessed before the session ended.
+
+**Design.**
+
+1. Keep `AGENTS.md` below 12 KB with only hard scope, authorization, capture, and continuity rules. Move detailed severity, SQL, naming, and reporting reference material to the on-demand `PT_PLAYBOOK.md`.
+2. Start sessions with `ptctl.py context boot`: compact scope, latest handoff, canonical counts, and a bounded number of open task titles. Exclude journal/finding prose, evidence bodies, scans, completed tasks, and the full board.
+3. Retrieve progressively with `context focus`, `context history`, and `context resume F##|O####`; expose `context explain` so the automatic boundary is auditable.
+4. Track content changes under `scans/` and `poc/` plus canonical registry changes. Require a structured `captured`, `no-finding`, `mixed`, or `administrative` outcome before the Stop hook permits the session to end.
+
+**Files.**
+
+- `org/templates/db/ptctl.py` — context router, artifact delta, capture gate, and structured session handoff.
+- `org/templates/context/` — initial handoff, safe state baseline, and git-ignore rule for the active marker.
+- `org/templates/AGENTS.md` / `PT_PLAYBOOK.md` — always-on versus on-demand split.
+- `org/templates/{claude,codex}/` and `org/templates/hooks/engagement-doctor.sh` — bounded boot and stop-time enforcement.
+- `tests/test-context-router.sh` plus scaffold/finding regression coverage.
+
+**Remaining:** commit the completed implementation and record its release reference here.
+
+---
+
 ## Backlog — unscheduled ideas
 
-- **DB-reconciliation reminder hook.** A `Stop` hook (guarded by `stop_hook_active` to avoid loops) that diffs observable state against the DB and nudges Claude when there's a concrete gap — strongest signal: `findings/<slug>.md` files with no matching row in the `finding` table (and the reverse), plus hosts present in `scans/**` artifacts but absent from `asset`. Deterministic, no semantic guessing. Pairs with passive context injection on `SessionStart`/`UserPromptSubmit` for asset drift. (Discussed; not yet scheduled.)
+No unscheduled items currently.
 
 ---
 
@@ -83,3 +108,14 @@ Research against `codex-cli 0.144.6` collapsed the design's biggest unknown: Cod
 Design + plan: `docs/superpowers/specs/2026-07-19-codex-config-parity-design.md`, `docs/superpowers/plans/2026-07-19-codex-config-parity.md`.
 
 **Deferred (one follow-up):** the report-prose format check (`check-report-format.sh`) stays Claude-only — Codex edits go through `apply_patch` (a patch blob, no `file_path`), so it needs a `PostToolUse(apply_patch)` or `Stop`-hook adaptation before it can mirror.
+
+### 3. Transactional observation/finding workflow — `f3b3195`
+
+Shipped a canonical control plane for the path from candidate evidence to report issue:
+
+- **Observation registry** — idempotent `O####` capture with semantic fingerprints, state transitions, and immutable evidence hashes.
+- **Finding workflow** — atomic create/attach/update/asset/merge operations, semantic `group_key` deduplication, managed Markdown metadata/evidence blocks, and automatic findings-index rendering.
+- **Anti-drift doctor** — checks DB↔Markdown/index consistency, missing PoC/write-up paths, unmanaged finding files, modified evidence, and unresolved observation state.
+- **Stop enforcement** — blocks on structural drift, transient observations, or `#observation` journal entries that do not reference an `O####`/`F##`.
+
+The progressive-context work in item 4 extends this shipped foundation with bounded retrieval and a session-level artifact capture gate.

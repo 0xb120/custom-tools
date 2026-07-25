@@ -272,6 +272,12 @@ fi
 grep -q '#observation entries without O/F reference' "$TMP/journal-hook.out" || \
     fail "Stop hook did not explain the unregistered journal observation"
 sed -i 's/#observation /#observation F01 /' journal.md
+"${PT[@]}" session close \
+    --focus 'consolidated authorization findings' \
+    --outcome captured \
+    --completed 'linked the journal observation to F01' \
+    --next 'continue authorization coverage' \
+    --reference F01 >/dev/null
 if ! printf '{}' | CLAUDE_PROJECT_DIR="$PWD" \
     bash .claude/hooks/engagement-doctor.sh >"$TMP/clean-hook.out" 2>&1; then
     cat "$TMP/clean-hook.out" >&2

@@ -1,0 +1,11 @@
+{
+  "artifacts": {},
+  "recorded_at": "initialized by newPT.sh",
+  "registry": {
+    "database_sha256": null,
+    "evidence": {},
+    "findings": {},
+    "observations": {}
+  },
+  "version": 1
+}

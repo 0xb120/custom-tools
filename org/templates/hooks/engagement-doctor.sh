@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Block an agent stop when canonical finding state has drifted or a newly
-# captured observation was never triaged. Other warnings remain visible but
-# non-blocking; blockers return exit 2 so the agent gets a repair turn.
+# Block an agent stop when canonical finding state has drifted, a newly
+# captured observation was never triaged, the compact session handoff was not
+# refreshed, or the active session capture gate has no explicit outcome.
+# Blockers return exit 2 so the agent gets a repair turn.
 
 input="$(cat)"
 
@@ -28,5 +29,12 @@ fi
 # Keep unresolved observations visible without blocking the stop.
 if [ -n "$output" ]; then
     printf '%s\n' "$output" >&2
+fi
+
+handoff_output="$(python3 "$tool" session check 2>&1)"
+handoff_status=$?
+if [ "$handoff_status" -ne 0 ]; then
+    printf '%s\n' "$handoff_output" >&2
+    exit 2
 fi
 exit 0
