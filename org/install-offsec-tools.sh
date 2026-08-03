@@ -654,7 +654,7 @@ install_recon() {
     # for endpoint discovery, emits one URL per line for piping into the pipeline.
     go_install -v github.com/s0rg/crawley/cmd/crawley@latest
     go_install -v github.com/Chocapikk/wpprobe@latest
-    wpprobe update-db
+    wpprobe update-db || echo "[!] wpprobe update-db failed (upstream repo gone — DB sync skipped; use wpscan)"
 
     # wpscan — WordPress vulnerability scanner. Ruby gem (ruby + ruby-dev
     # already in install_base); more thorough than wpprobe (integrates WPVulnDB).
