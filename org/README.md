@@ -46,10 +46,10 @@ chmod 600 org/conf/devcontainer.env
 
 The master file and generated `.env` are secret-bearing files and must not be committed.
 
-Claude and Codex are configured to reach the Burp MCP extension on `http://127.0.0.1:9876/sse`. Override that endpoint while scaffolding when necessary:
+Claude and Codex are configured to reach the Burp MCP extension on `http://127.0.0.1:9876` (SSE transport, served at the root path — the extension returns 404 on `/sse` and `/mcp`). Override that endpoint while scaffolding when necessary:
 
 ```bash
-BURP_MCP_URL=http://127.0.0.1:18080/sse \
+BURP_MCP_URL=http://127.0.0.1:18080 \
   ./org/newPT.sh web acme-portal
 ```
 

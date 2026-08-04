@@ -128,10 +128,12 @@ sqlite3 "$activity_name/db/engagement.db" < "$template_dir/db/schema.sql" >/dev/
 
 CUSTOM_TOOLS_REF="main"
 
-# Burp Suite MCP endpoint (SSE) both agents connect to. Burp runs on the HOST
-# with the "MCP Server" extension; the container reaches it via --network=host.
-# Overridable at scaffold time: BURP_MCP_URL=http://host:port/sse bash newPT.sh ...
-BURP_MCP_URL="${BURP_MCP_URL:-http://127.0.0.1:9876/sse}"
+# Burp Suite MCP endpoint both agents connect to. Burp runs on the HOST with the
+# "MCP Server" extension; the container reaches it via --network=host. Transport
+# is SSE served at the ROOT path (verified against the extension: /sse and /mcp
+# return 404, the SSE stream is at /). Overridable at scaffold time:
+# BURP_MCP_URL=http://host:port bash newPT.sh ...
+BURP_MCP_URL="${BURP_MCP_URL:-http://127.0.0.1:9876}"
 
 # .devcontainer/ — Docker sandbox configuration for Claude Code agents.
 mkdir -p "$activity_name/.devcontainer"

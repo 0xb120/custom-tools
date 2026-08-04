@@ -20,7 +20,9 @@ Verified on the host (2026-07-20):
 - **Claude Code 2.1.215** supports the `sse`/`http` MCP transports natively in a project-scoped `.mcp.json`. It can point straight at Burp's SSE URL.
 - **Codex 0.144.6** reads a project-scoped `.codex/config.toml` (established by the parity work) in addition to `~/.codex/config.toml`. Its native `url` MCP transport speaks *Streamable-HTTP* (the newer transport), whereas the Burp extension historically exposes *SSE* (the legacy transport) → **native compatibility is uncertain and version-dependent**.
 - **node/npx is present in the container** (installed by `install_base`); **Java is not** (the installer never installs a JDK). Any bridge must therefore be node-based (`mcp-remote`), not a Java proxy jar.
-- The engagement container runs with `--network=host`, so a host-side Burp SSE server at `127.0.0.1:9876/sse` is reachable from inside the container with no extra plumbing.
+- The engagement container runs with `--network=host`, so a host-side Burp SSE server at `127.0.0.1:9876` is reachable from inside the container with no extra plumbing.
+
+> **Runtime correction (2026-08-04):** the default endpoint is `http://127.0.0.1:9876` (root), **not** `…/9876/sse`. Verified live against the installed extension: `GET /sse` and `GET /mcp` return **404**, `GET /` returns **200** (the SSE stream), and `POST /` returns `400 "sessionId query parameter is not provided"` — the query-param session signature of the **legacy SSE transport served at the root path**. The transport type stays `sse`; only the path was wrong in the original design. This propagates through the single `BURP_MCP_URL` default.
 
 ### Decisions (agreed during brainstorming)
 
@@ -31,7 +33,7 @@ Verified on the host (2026-07-20):
 ## Architecture / data flow
 
 ```
-HOST:  Burp Suite + "MCP Server" extension  ──►  SSE @ {{BURP_MCP_URL}}  (default 127.0.0.1:9876/sse)
+HOST:  Burp Suite + "MCP Server" extension  ──►  SSE @ {{BURP_MCP_URL}}  (default 127.0.0.1:9876, SSE at root)
                      ▲  (--network=host: the container's localhost IS the host's localhost)
 CONTAINER  /workspace (bind-mounted engagement root):
    Claude ── .mcp.json {type:sse, url} ─────────────────────────►  Burp SSE
@@ -82,7 +84,7 @@ The probe runs on the host (where up.sh executes and where Burp runs), so it is 
 ### 5. `org/newPT.sh`
 - Define near the other scaffold vars:
   ```sh
-  BURP_MCP_URL="${BURP_MCP_URL:-http://127.0.0.1:9876/sse}"
+  BURP_MCP_URL="${BURP_MCP_URL:-http://127.0.0.1:9876}"
   ```
 - Copy the new template: `cp "$template_dir/devcontainer/mcp.json" "$activity_name/.mcp.json"`.
 - Extend the placeholder-substitution so `{{BURP_MCP_URL}}` is injected into the three files that carry it: `<activity>/.mcp.json`, `<activity>/.devcontainer/up.sh`, `<activity>/.devcontainer/devcontainer.json` (the last for the postCreate `codex mcp add`). A focused second `sed` invocation handles this placeholder.

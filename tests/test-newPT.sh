@@ -210,8 +210,8 @@ test -f engagement-internal/.mcp.json || fail ".mcp.json missing at engagement r
 jq -e . engagement-internal/.mcp.json >/dev/null || fail ".mcp.json is not valid JSON"
 jq -e '.mcpServers.burp.type == "sse"' engagement-internal/.mcp.json >/dev/null || \
     fail ".mcp.json must declare mcpServers.burp with type=sse"
-jq -e '.mcpServers.burp.url == "http://127.0.0.1:9876/sse"' engagement-internal/.mcp.json >/dev/null || \
-    fail ".mcp.json burp.url must be the default Burp MCP endpoint"
+jq -e '.mcpServers.burp.url == "http://127.0.0.1:9876"' engagement-internal/.mcp.json >/dev/null || \
+    fail ".mcp.json burp.url must be the default Burp MCP endpoint (SSE at root, no /sse)"
 grep -q "{{" engagement-internal/.mcp.json && fail ".mcp.json still has an unresolved {{PLACEHOLDER}}"
 pass ".mcp.json scaffolded with the Burp MCP server (native SSE, URL substituted)"
 
@@ -223,8 +223,8 @@ pass ".claude/settings.json enables project MCP servers (no trust prompt in yolo
 # --- Test 6f: BURP_MCP_URL env override flows into .mcp.json ---
 cd "$TMP"
 rm -rf engagement-burpurl
-BURP_MCP_URL="http://127.0.0.1:18080/sse" bash "$SCRIPT" lite engagement-burpurl >/dev/null
-jq -e '.mcpServers.burp.url == "http://127.0.0.1:18080/sse"' engagement-burpurl/.mcp.json >/dev/null || \
+BURP_MCP_URL="http://127.0.0.1:18080" bash "$SCRIPT" lite engagement-burpurl >/dev/null
+jq -e '.mcpServers.burp.url == "http://127.0.0.1:18080"' engagement-burpurl/.mcp.json >/dev/null || \
     fail "BURP_MCP_URL override should flow into .mcp.json"
 cd "$TMP"
 pass "BURP_MCP_URL env override is honored at scaffold time"
@@ -236,7 +236,7 @@ grep -q 'codex mcp add burp' engagement-internal/.devcontainer/devcontainer.json
     fail "devcontainer.json postCreate must register the Burp MCP server for Codex"
 grep -q 'mcp-remote' engagement-internal/.devcontainer/devcontainer.json || \
     fail "devcontainer.json codex mcp add must use the mcp-remote bridge"
-grep -q 'http://127.0.0.1:9876/sse' engagement-internal/.devcontainer/devcontainer.json || \
+grep -q 'mcp-remote http://127.0.0.1:9876' engagement-internal/.devcontainer/devcontainer.json || \
     fail "devcontainer.json codex mcp add must carry the substituted Burp MCP URL"
 grep -q '\[mcp_servers.burp\]' engagement-internal/.codex/config.toml && \
     fail ".codex/config.toml must NOT declare [mcp_servers.burp] (Codex ignores project mcp_servers)"
@@ -246,7 +246,7 @@ pass "Codex Burp MCP registered via postCreate codex mcp add (global config)"
 test -f engagement-internal/.devcontainer/up.sh || fail ".devcontainer/up.sh missing"
 grep -q 'Burp MCP endpoint' engagement-internal/.devcontainer/up.sh || \
     fail "up.sh must warn when the Burp MCP endpoint is unreachable"
-grep -q 'http://127.0.0.1:9876/sse' engagement-internal/.devcontainer/up.sh || \
+grep -q 'http://127.0.0.1:9876' engagement-internal/.devcontainer/up.sh || \
     fail "up.sh probe must carry the substituted Burp MCP URL"
 grep -q "{{" engagement-internal/.devcontainer/up.sh && \
     fail "up.sh still has an unresolved {{PLACEHOLDER}}"
