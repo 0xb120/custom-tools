@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -2587,6 +2588,55 @@ def doctor(con: sqlite3.Connection) -> tuple[list[str], list[str]]:
     return errors, warnings
 
 
+def cmd_poc_sync(args: argparse.Namespace) -> None:
+    with connect() as con:
+        if args.finding:
+            findings = [finding_row(con, args.finding)]
+        else:
+            findings = con.execute(
+                "SELECT * FROM finding "
+                "WHERE lifecycle IN ('draft','confirmed') ORDER BY id"
+            ).fetchall()
+        copied = updated = skipped = 0
+        for row in findings:
+            slug = row["slug"]
+            poc_dir = ROOT / (row["poc_dir"] or f"poc/{slug}/")
+            poc_dir.mkdir(parents=True, exist_ok=True)
+            evidence = con.execute(
+                """
+                SELECT DISTINCT e.path
+                FROM finding_observation fo
+                JOIN evidence e ON e.observation_id=fo.observation_id
+                WHERE fo.finding_id=? AND e.kind='poc'
+                ORDER BY e.path
+                """,
+                (int(row["id"]),),
+            ).fetchall()
+            # basename -> source path already materialized this run, so a second
+            # source sharing a basename is disambiguated instead of overwriting.
+            claimed: "dict[str, str]" = {}
+            for record in evidence:
+                rel = record["path"]
+                src = ROOT / rel
+                if not src.is_file():
+                    continue  # evidence missing on disk; doctor covers that drift
+                name = Path(rel).name
+                if claimed.get(name, rel) != rel:
+                    name = f"{Path(rel).parent.name}__{name}"
+                claimed[name] = rel
+                dest = poc_dir / name
+                if dest.exists() and sha256_file(dest) == sha256_file(src):
+                    skipped += 1
+                    continue
+                existed = dest.exists()
+                shutil.copy2(src, dest)
+                if existed:
+                    updated += 1
+                else:
+                    copied += 1
+        print(f"poc sync: {copied} copied, {updated} updated, {skipped} unchanged")
+
+
 def cmd_doctor(args: argparse.Namespace) -> None:
     with connect() as con:
         errors, warnings = doctor(con)
@@ -2751,6 +2801,16 @@ def build_parser() -> argparse.ArgumentParser:
     merge.add_argument("source")
     merge.add_argument("--into", required=True)
     merge.set_defaults(func=cmd_finding_merge)
+
+    poc = top.add_parser("poc")
+    poc_commands = poc.add_subparsers(dest="command", required=True)
+    poc_sync = poc_commands.add_parser("sync")
+    poc_sync.add_argument(
+        "finding",
+        nargs="?",
+        help="sync only this finding (F-id or slug); default: all findings",
+    )
+    poc_sync.set_defaults(func=cmd_poc_sync)
 
     doctor_parser = top.add_parser("doctor")
     doctor_parser.add_argument("--strict", action="store_true")
