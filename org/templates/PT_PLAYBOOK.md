@@ -91,7 +91,7 @@ Run with `sqlite3 db/engagement.db < db/queries/<name>.sql`. Use `bash db/whatwe
 - Segment and finding slugs use short kebab-case.
 - Screenshots use `<finding-slug>_NN.png`.
 - Raw HTTP pairs use `req_NN.http` and `res_NN.http`.
-- Reproduction scripts go under `poc/<finding-slug>/`, include a usage banner, and are executable.
+- Reproduction scripts go under `poc/<finding-slug>/`, include a usage banner, and are executable. Evidence registered with `--kind poc` (stored under `scans/`) is materialized into the matching `poc/<finding-slug>/` by `db/ptctl.py poc sync` (run it before packaging; it copies, never prunes, so hand-written repro scripts are preserved).
 - Organize `scans/<segment>/` consistently by tool, date, or a deliberate flat layout.
 - Client-provided secrets stay in `attachments/`; discovered identities and secrets stay in `wl/`, one append-only/deduplicated file per type.
 
