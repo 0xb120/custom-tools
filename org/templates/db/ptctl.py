@@ -414,8 +414,11 @@ def evidence_markdown(con: sqlite3.Connection, finding_id: int) -> str:
     lines = []
     for row in rows:
         suffix = f" — {row['description']}" if row["description"] else ""
+        path = row["path"]
+        # Navigable ../-relative link: write-ups live in findings/, evidence
+        # paths are relative to the engagement root.
         lines.append(
-            f"- `{row['path']}` ({row['kind']}, "
+            f"- [{path}](../{path}) ({row['kind']}, "
             f"{display_observation(int(row['observation_id']))}){suffix}"
         )
     return "\n".join(lines)
@@ -2342,11 +2345,18 @@ def reference_warnings(text: str, label: str) -> list[str]:
         if in_section:
             section.append(line)
     urls = [line for line in section if re.search(r"https?://", line)]
+    list_items = [line for line in section if re.match(r"\s*[-*]\s+\S", line)]
+    non_link = [line for line in list_items if not re.search(r"https?://", line)]
     problems: list[str] = []
     if len(urls) < MIN_EXTERNAL_REFERENCES:
         problems.append(
             f"{label} ## References has {len(urls)} external reference(s); "
             f"at least {MIN_EXTERNAL_REFERENCES} required"
+        )
+    if non_link:
+        problems.append(
+            f"{label} ## References has {len(non_link)} reference line(s) "
+            "without a link; every reference must be a URL/link"
         )
     if urls and not any(
         domain in line for line in urls for domain in PRIORITY_REFERENCE_DOMAINS

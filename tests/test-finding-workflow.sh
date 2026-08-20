@@ -181,10 +181,13 @@ board="$("${PT[@]}" board)"
 echo "$board" | grep -q 'occurrences=3' || fail "board should show three occurrences"
 pass "semantic group_key prevents duplicate report findings"
 
-# The references rule (>=3 external links, >=1 from a priority domain) is a
-# doctor warning that is fatal under --strict, so the canonical finding needs
-# compliant references before the strict-doctor assertions below.
+# The references rule (>=3 links, every reference a link, >=1 from a priority
+# domain) is a doctor warning fatal under --strict, so replace the canonical
+# finding's placeholder references with compliant links before the checks below.
+sed -i '/^## References/,$d' findings/cross-tenant-order-access.md
 cat >> findings/cross-tenant-order-access.md <<'REF'
+## References
+
 - https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html
 - https://portswigger.net/web-security/access-control
 - https://cwe.mitre.org/data/definitions/639.html
