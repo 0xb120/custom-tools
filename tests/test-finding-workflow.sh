@@ -181,6 +181,15 @@ board="$("${PT[@]}" board)"
 echo "$board" | grep -q 'occurrences=3' || fail "board should show three occurrences"
 pass "semantic group_key prevents duplicate report findings"
 
+# The references rule (>=3 external links, >=1 from a priority domain) is a
+# doctor warning that is fatal under --strict, so the canonical finding needs
+# compliant references before the strict-doctor assertions below.
+cat >> findings/cross-tenant-order-access.md <<'REF'
+- https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html
+- https://portswigger.net/web-security/access-control
+- https://cwe.mitre.org/data/definitions/639.html
+REF
+
 # Canonical updates repair DB, write-up, and rendered index together.
 "${PT[@]}" finding update F01 --severity HIGH >/dev/null
 [ "$(sqlite3 db/engagement.db 'SELECT severity FROM finding WHERE id=1;')" = HIGH ] || \

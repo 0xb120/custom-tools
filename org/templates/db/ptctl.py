@@ -2320,6 +2320,44 @@ def activity_file() -> Path | None:
     return matches[0] if len(matches) == 1 else None
 
 
+PRIORITY_REFERENCE_DOMAINS = (
+    "cheatsheetseries.owasp.org",
+    "portswigger.net/web-security",
+)
+MIN_EXTERNAL_REFERENCES = 3
+
+
+def reference_warnings(text: str, label: str) -> list[str]:
+    """Policy for a finding's ## References section: at least
+    MIN_EXTERNAL_REFERENCES external links, at least one from a priority domain.
+    Returned as warnings (fatal only under `doctor --strict`)."""
+    section: list[str] = []
+    in_section = False
+    for line in text.splitlines():
+        if re.match(r"^##\s+References\b", line):
+            in_section = True
+            continue
+        if in_section and re.match(r"^##\s+\S", line):
+            break
+        if in_section:
+            section.append(line)
+    urls = [line for line in section if re.search(r"https?://", line)]
+    problems: list[str] = []
+    if len(urls) < MIN_EXTERNAL_REFERENCES:
+        problems.append(
+            f"{label} ## References has {len(urls)} external reference(s); "
+            f"at least {MIN_EXTERNAL_REFERENCES} required"
+        )
+    if urls and not any(
+        domain in line for line in urls for domain in PRIORITY_REFERENCE_DOMAINS
+    ):
+        problems.append(
+            f"{label} ## References must include at least one link from "
+            + " or ".join(PRIORITY_REFERENCE_DOMAINS)
+        )
+    return problems
+
+
 def doctor(con: sqlite3.Connection) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -2390,6 +2428,8 @@ def doctor(con: sqlite3.Connection) -> tuple[list[str], list[str]]:
             expected_evidence = evidence_markdown(con, finding_id).strip()
             if rendered_evidence != expected_evidence:
                 errors.append(f"{label} managed evidence block drift")
+        if row["lifecycle"] in ACTIVE_LIFECYCLES:
+            warnings.extend(reference_warnings(text, label))
         if row["lifecycle"] in ACTIVE_LIFECYCLES and not row["group_key"]:
             errors.append(f"{label} active finding has no group_key (legacy/untriaged)")
         if row["lifecycle"] in ACTIVE_LIFECYCLES and row["segment_id"] is None:
