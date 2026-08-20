@@ -125,6 +125,10 @@ python3 db/ptctl.py observation state O0006 rejected --reason 'scanner false pos
 python3 db/ptctl.py doctor
 ```
 
+### References are mandatory
+
+Every finding's `## References` section must cite at least 3 external references (each a complete link), and at least one must come from `cheatsheetseries.owasp.org` or `portswigger.net/web-security`. `db/ptctl.py doctor` reports shortfalls as a warning; `doctor --strict` (the pre-report gate) treats them as errors. Fill real links before delivery.
+
 ## Session continuity
 
 `TODO.md` contains pending actions, grouped under `## <segment>` and written as Markdown checkboxes. Update it immediately as work emerges or completes. `journal.md` contains dated hypotheses, dead ends, decisions, and analysis—not tasks.

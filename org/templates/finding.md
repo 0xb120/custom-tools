@@ -45,5 +45,12 @@ _No registered evidence yet — use `ptctl.py observation evidence`._
 
 ## References
 
-- <Vendor advisory / CVE / standards link>
-- <OWASP / PortSwigger / research write-up that backs the technique>
+<!--
+Rule (enforced by `db/ptctl.py doctor`; a warning normally, fatal under
+--strict): list at least 3 external references below, each a complete link.
+At least one must come from cheatsheetseries.owasp.org or
+portswigger.net/web-security. Replace every placeholder with a real link.
+-->
+- <cheatsheetseries.owasp.org cheat sheet for this vulnerability class — paste the full link>
+- <portswigger.net/web-security topic that backs the technique — paste the full link>
+- <vendor advisory / CVE / standards / research link>

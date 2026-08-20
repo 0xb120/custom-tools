@@ -6,6 +6,8 @@ This is an on-demand reference. It is intentionally excluded from session boot c
 
 Each `findings/<slug>.md` must retain the template sections for Vuln_ID, group key, title, severity, status, affected assets, CWE, segment, observation IDs, impact summary, description, reproduction steps, managed evidence, remediation, and references. `ptctl.py` owns managed metadata and evidence blocks; the tester owns the narrative sections.
 
+The `## References` section is mandatory: at least 3 external references (each a complete link), with at least one from `cheatsheetseries.owasp.org` or `portswigger.net/web-security` (prefer the vulnerability-class cheat sheet and the matching Web Security Academy topic, then vendor/CVE/standards/research links). `doctor` flags a shortfall as a warning; `doctor --strict` fails on it, so resolve it before packaging.
+
 The activity-level findings index is rendered from the DB. IDs are `F##`, never reused; active rows are severity-sorted and link to the write-up.
 
 ## Severity scale
