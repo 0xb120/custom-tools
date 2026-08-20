@@ -54,9 +54,9 @@ Status legend: `idea` (needs design) · `ready` (design agreed, can build) · `i
 
 ---
 
-## 4. Progressive context and bounded session handoff
+## 4. Progressive context and bounded session handoff — ✅ done (see § Done)
 
-**Status:** `in-progress` · **Size:** M · **Area:** `org/templates/`, `org/newPT.sh`
+**Status:** `done` · **Size:** M · **Area:** `org/templates/`, `org/newPT.sh`
 
 **Motivation.** The old SessionStart hook preloaded all of `AGENTS.md`, `TODO.md`, recent journal prose, and the full finding board. That consumed context, biased new investigations toward old conclusions, and still did not guarantee that tool-generated `scans/`/`poc/` artifacts were captured or assessed before the session ended.
 
@@ -75,13 +75,71 @@ Status legend: `idea` (needs design) · `ready` (design agreed, can build) · `i
 - `org/templates/{claude,codex}/` and `org/templates/hooks/engagement-doctor.sh` — bounded boot and stop-time enforcement.
 - `tests/test-context-router.sh` plus scaffold/finding regression coverage.
 
-**Remaining:** commit the completed implementation and record its release reference here.
+**Shipped:** `7e16599`.
+
+---
+
+## 5. Make the recon orchestrator location-independent
+
+**Status:** `ready` · **Size:** S · **Area:** `utils/recon/`
+
+**Motivation.** `utils/recon/recon-orchestrator.sh` currently invokes workers through hard-coded `/opt/custom-tools/recon/...` paths, while the repository stores them under `utils/recon/`. A checkout or devcontainer can therefore have every worker present and still fail at the first orchestration step.
+
+**Design.**
+
+1. Resolve the worker directory once from `BASH_SOURCE[0]`.
+2. Invoke every worker through that resolved directory while keeping engagement output relative to the operator's current directory.
+3. Add an offline orchestrator smoke test with stub workers, covering paths that contain spaces and invocation from outside the repository.
+4. Align the root and recon READMEs with the tested invocation.
+
+**Files.**
+
+- `utils/recon/recon-orchestrator.sh`
+- `utils/recon/tests/`
+- `README.md`
+- `utils/recon/README.md`
+
+---
+
+## 6. Upgrade existing engagement workspaces
+
+**Status:** `idea` · **Size:** L · **Area:** `org/`
+
+**Motivation.** `newPT.sh` produces the current control plane only for new workspaces. Existing engagements do not automatically receive the transactional registry, progressive context files, updated hooks, or schema changes, and copying templates manually risks overwriting engagement-specific rules and report prose.
+
+**Design questions.**
+
+- Where should scaffold/schema version metadata live?
+- Should upgrades be a separate `upgradePT.sh` or a `newPT.sh upgrade` command?
+- Which generated files can be replaced safely, and which need a three-way merge?
+- How should database migrations remain transactional, restartable, and backwards-compatible?
+- What backup and dry-run guarantees are required before touching a live engagement?
+
+**Acceptance direction.** An operator can preview and apply an idempotent upgrade to a pre-`f3b3195` fixture without losing scope, journal, TODO, findings, evidence, credentials, or custom agent rules.
+
+---
+
+## 7. Live agent lifecycle smoke test
+
+**Status:** `ready` · **Size:** S · **Area:** `tests/`, `org/templates/`
+
+**Motivation.** Offline tests cover the context router, registry, hooks, and capture gate, but do not execute a real Claude/Codex session inside the generated devcontainer. Payload or lifecycle differences in the installed CLIs could therefore escape the harness.
+
+**Design.**
+
+1. Scaffold a `none` engagement and build the minimal devcontainer.
+2. Exercise SessionStart and Stop with both installed agents.
+3. Cover `captured`, `no-finding`, and context-only `administrative` outcomes.
+4. Keep Burp reachability non-blocking; add an opt-in MCP probe when the extension is available.
+5. Make the test explicitly opt-in so normal offline CI remains deterministic.
 
 ---
 
 ## Backlog — unscheduled ideas
 
-No unscheduled items currently.
+- **Codex report-format parity.** Adapt the Claude-only report prose check to Codex's `apply_patch`/Stop lifecycle without scanning unrelated Markdown.
+- **Automatic host dossier hints.** Reconsider surfacing hosts with `access IS NULL` at SessionStart only after measuring context cost and operator value.
+- **Gowitness v3 screenshots.** Replace the current `httpx -screenshot` path when the report-serve UI justifies the dependency and migration effort.
 
 ---
 
@@ -119,3 +177,15 @@ Shipped a canonical control plane for the path from candidate evidence to report
 - **Stop enforcement** — blocks on structural drift, transient observations, or `#observation` journal entries that do not reference an `O####`/`F##`.
 
 The progressive-context work in item 4 extends this shipped foundation with bounded retrieval and a session-level artifact capture gate.
+
+### 4. Progressive context and bounded session handoff — `7e16599`
+
+Shipped a bias-resistant, auditable session lifecycle:
+
+- **Bounded boot** — compact scope, current handoff, canonical counts, and open task titles, without journal/finding prose, evidence bodies, scans, completed task history, or the full board.
+- **Progressive retrieval** — `context focus`, `history`, `resume`, `pending`, and `explain` expose only the layer intentionally requested.
+- **Structured handoff** — content-based `scans/`/`poc/` and registry deltas feed a compact `.context/handoff.md`.
+- **Capture gate** — every interactive session closes with a `captured`, `no-finding`, `mixed`, or `administrative` outcome; unchanged historical references cannot account for new artifacts.
+- **Shared enforcement** — Claude and Codex SessionStart/Stop hooks use the same control plane while avoiding duplicate native rules in Codex.
+
+The implementation also added the on-demand `PT_PLAYBOOK.md`, full operator documentation under `org/README.md`, and regression coverage for context isolation and handoff freshness.
