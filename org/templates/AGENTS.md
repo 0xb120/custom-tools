@@ -127,7 +127,7 @@ python3 db/ptctl.py doctor
 
 ### References are mandatory
 
-Every finding's `## References` section must cite at least 3 external references (each a complete link), and at least one must come from `cheatsheetseries.owasp.org` or `portswigger.net/web-security`. `db/ptctl.py doctor` reports shortfalls as a warning; `doctor --strict` (the pre-report gate) treats them as errors. Fill real links before delivery.
+Every finding's `## References` section must cite at least 3 external references; every reference must be a link (a URL), and at least one must come from `cheatsheetseries.owasp.org` or `portswigger.net/web-security`. `db/ptctl.py doctor` reports shortfalls as a warning; `doctor --strict` (the pre-report gate) treats them as errors. Fill real links before delivery. The managed evidence block renders each evidence path as a navigable relative link automatically.
 
 ## Session continuity
 
