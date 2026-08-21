@@ -129,6 +129,10 @@ python3 db/ptctl.py doctor
 
 Every finding's `## References` section must cite at least 3 external references; every reference must be a link (a URL), and at least one must come from `cheatsheetseries.owasp.org` or `portswigger.net/web-security`. `db/ptctl.py doctor` reports shortfalls as a warning; `doctor --strict` (the pre-report gate) treats them as errors. Fill real links before delivery. The managed evidence block renders each evidence path as a navigable relative link automatically.
 
+### A complete HTTP request is mandatory evidence
+
+Every finding must register at least one complete, unredacted HTTP request as evidence (`--kind http-request`) — a real request confirmed working during the test, with **no removed headers or redacted fields** — so the client has a replayable example at patch time. `db/ptctl.py doctor` **blocks the stop** and `doctor --strict` fails until each active finding has an `http-request` evidence whose file contains a valid request line. Capture it while it is fresh, in the session where you confirm the issue. For a genuinely non-HTTP finding, opt out by adding `<!-- no-http-request: <reason> -->` to the write-up.
+
 ## Session continuity
 
 `TODO.md` contains pending actions, grouped under `## <segment>` and written as Markdown checkboxes. Update it immediately as work emerges or completes. `journal.md` contains dated hypotheses, dead ends, decisions, and analysis—not tasks.

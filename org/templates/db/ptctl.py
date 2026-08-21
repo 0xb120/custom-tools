@@ -2368,6 +2368,49 @@ def reference_warnings(text: str, label: str) -> list[str]:
     return problems
 
 
+HTTP_REQUEST_KIND = "http-request"
+HTTP_REQUEST_LINE = re.compile(r"^[A-Z]+\s+\S+\s+HTTP/\d", re.MULTILINE)
+NO_HTTP_REQUEST_OPTOUT = re.compile(r"<!--\s*no-http-request:\s*\S.*?-->", re.DOTALL)
+
+
+def http_request_warnings(
+    con: sqlite3.Connection, finding_id: int, text: str, label: str
+) -> list[str]:
+    """A complete HTTP request is mandatory evidence for every active finding, so
+    the client has a real, confirmed-working request at patch time. Requires >=1
+    evidence of kind 'http-request' whose file has a valid request line, unless
+    the write-up carries a `<!-- no-http-request: reason -->` opt-out. Warnings
+    here are blocking under --hook and fatal under --strict."""
+    if NO_HTTP_REQUEST_OPTOUT.search(text):
+        return []
+    rows = con.execute(
+        """
+        SELECT DISTINCT e.path
+        FROM finding_observation fo
+        JOIN evidence e ON e.observation_id=fo.observation_id
+        WHERE fo.finding_id=? AND e.kind=?
+        ORDER BY e.path
+        """,
+        (finding_id, HTTP_REQUEST_KIND),
+    ).fetchall()
+    if not rows:
+        return [
+            f"{label} has no HTTP request evidence; a complete HTTP request is "
+            "mandatory (register one with kind=http-request, or add "
+            "<!-- no-http-request: reason --> to the write-up)"
+        ]
+    for row in rows:
+        src = ROOT / row["path"]
+        if src.is_file() and HTTP_REQUEST_LINE.search(
+            src.read_text(encoding="utf-8", errors="replace")
+        ):
+            return []
+    return [
+        f"{label} HTTP request evidence is incomplete: no registered http-request "
+        "file has a valid request line (METHOD path HTTP/x.y)"
+    ]
+
+
 def doctor(con: sqlite3.Connection) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -2440,6 +2483,7 @@ def doctor(con: sqlite3.Connection) -> tuple[list[str], list[str]]:
                 errors.append(f"{label} managed evidence block drift")
         if row["lifecycle"] in ACTIVE_LIFECYCLES:
             warnings.extend(reference_warnings(text, label))
+            warnings.extend(http_request_warnings(con, finding_id, text, label))
         if row["lifecycle"] in ACTIVE_LIFECYCLES and not row["group_key"]:
             errors.append(f"{label} active finding has no group_key (legacy/untriaged)")
         if row["lifecycle"] in ACTIVE_LIFECYCLES and row["segment_id"] is None:
@@ -2696,6 +2740,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             message.startswith("journal has ")
             and "#observation entries without O/F reference" in message
         )
+        or "HTTP request evidence" in message
         for message in warnings
     )
     if not args.quiet or errors or warnings:

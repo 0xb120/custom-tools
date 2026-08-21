@@ -35,6 +35,13 @@ Reference template — `db/ptctl.py finding create` copies and initializes it.
 
 ## Evidence
 
+<!--
+Evidence rule (doctor blocks the stop hook and fails --strict): every finding
+must register at least one complete, unredacted HTTP request (kind=http-request)
+— a real request confirmed working during the test, with no removed headers or
+redacted fields, so the client can replay it at patch time. For a genuinely
+non-HTTP finding, opt out with a no-http-request marker (see AGENTS.md).
+-->
 <!-- ptctl:evidence -->
 _No registered evidence yet — use `ptctl.py observation evidence`._
 <!-- /ptctl:evidence -->

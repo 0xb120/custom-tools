@@ -10,6 +10,8 @@ The `## References` section is mandatory: at least 3 external references, every 
 
 The managed evidence block renders each registered path as a navigable Markdown link relative to the write-up (`[scans/…](../scans/…)`); `ptctl.py` maintains it, so never hand-edit the paths.
 
+Every finding must include at least one complete, unredacted HTTP request as evidence (`--kind http-request`): the real request confirmed working during the test, with no removed headers or redacted fields, so the client can replay it at patch time. `doctor` blocks the stop and `doctor --strict` fails until each active finding has an `http-request` evidence whose file contains a valid request line (`METHOD path HTTP/x.y`). Opt out only for genuinely non-HTTP findings by adding `<!-- no-http-request: <reason> -->` to the write-up.
+
 The activity-level findings index is rendered from the DB. IDs are `F##`, never reused; active rows are severity-sorted and link to the write-up.
 
 ## Severity scale
