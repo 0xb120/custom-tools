@@ -29,22 +29,27 @@ EOF
     exit 1
 }
 
-# Internal debug flag used by tests/test-newPT.sh — prints the INSTALL_GROUPS
-# string the script would resolve for the given type, without scaffolding.
-# Not advertised in the usage banner.
-if [ "${1:-}" = "--print-groups" ]; then
-    [ "$#" -eq 2 ] || { echo "Usage: $0 --print-groups <type>" >&2; exit 1; }
-    type="$2"
-    activity_name=""
-    base="debian"
-else
-    if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
-        usage
-    fi
-    type="$1"
-    activity_name="$2"
-    base="${3:-debian}"
-fi
+# Internal debug flags used by tests/test-newPT.sh — print the INSTALL_GROUPS or
+# the plugin allowlist the script would resolve for the given type, without
+# scaffolding. Not advertised in the usage banner.
+PRINT_MODE=""
+case "${1:-}" in
+    --print-groups|--print-plugins)
+        [ "$#" -eq 2 ] || { echo "Usage: $0 $1 <type>" >&2; exit 1; }
+        PRINT_MODE="$1"
+        type="$2"
+        activity_name=""
+        base="debian"
+        ;;
+    *)
+        if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+            usage
+        fi
+        type="$1"
+        activity_name="$2"
+        base="${3:-debian}"
+        ;;
+esac
 
 # Map base alias → concrete image tag. Both bases are Debian-derived, so
 # install-offsec-tools.sh works on either without per-distro branches (the
@@ -76,11 +81,53 @@ case "$type" in
         ;;
 esac
 
-# --print-groups short-circuit: print resolved groups and exit before any I/O.
-if [ -z "$activity_name" ]; then
-    echo "$INSTALL_GROUPS"
+# Agent plugins for this engagement type. The container inherits NOTHING from the
+# operator's workstation (only credentials are mounted), so each engagement
+# declares its own allowlist. It lands in .claude/settings.json, which is both
+# the record and the input to org/sync-agent-plugins.sh — the postCreate step
+# that actually installs them, and which you re-run by hand after editing.
+# Keep these lists short: every enabled plugin costs always-on context in every
+# session of the engagement. Add per engagement, don't grow the defaults.
+case "$type" in
+    web|external) ENGAGEMENT_PLUGINS="burpsuite-project-parser@trailofbits static-analysis@trailofbits" ;;
+    internal)     ENGAGEMENT_PLUGINS="burpsuite-project-parser@trailofbits" ;;
+    full)         ENGAGEMENT_PLUGINS="burpsuite-project-parser@trailofbits static-analysis@trailofbits audit-context-building@trailofbits" ;;
+    *)            ENGAGEMENT_PLUGINS="" ;;   # cloud, mobile, lite, none — add by hand if needed
+esac
+
+# Marketplace id -> the source string `plugin marketplace add` accepts (GitHub
+# owner/repo here; a URL or a local path work too). Every marketplace referenced
+# by ENGAGEMENT_PLUGINS must resolve here, otherwise the sync step cannot find
+# the plugin. Add a row when you start using a new marketplace.
+marketplace_source() {
+    case "$1" in
+        trailofbits)             echo "trailofbits/skills" ;;
+        claude-plugins-official) echo "anthropics/claude-plugins-official" ;;
+        *) return 1 ;;
+    esac
+}
+
+# --print-* short-circuit: print the resolved value and exit before any I/O.
+if [ -n "$PRINT_MODE" ]; then
+    case "$PRINT_MODE" in
+        --print-groups)  echo "$INSTALL_GROUPS" ;;
+        --print-plugins) echo "$ENGAGEMENT_PLUGINS" ;;
+    esac
     exit 0
 fi
+
+# Fail early on a typo in the tables above rather than at container postCreate.
+for plugin_id in $ENGAGEMENT_PLUGINS; do
+    case "$plugin_id" in
+        *@*) ;;
+        *) echo "ERROR: plugin '$plugin_id' must be <plugin>@<marketplace>" >&2; exit 1 ;;
+    esac
+    marketplace_source "${plugin_id##*@}" >/dev/null || {
+        echo "ERROR: no marketplace source known for '${plugin_id##*@}'" >&2
+        echo "       add it to marketplace_source() in $0" >&2
+        exit 1
+    }
+done
 
 # Create the folder structure
 mkdir -p "$activity_name"/{attachments,scans,poc,findings,wl,logs}
@@ -192,6 +239,43 @@ cp "$template_dir/devcontainer/gitignore" "$activity_name/.devcontainer/.gitigno
 # (command audit, DB→Markdown auto-render, report formatting, stop-time doctor).
 mkdir -p "$activity_name/.claude/hooks"
 cp "$template_dir/claude/settings.json" "$activity_name/.claude/settings.json"
+
+# Write the engagement's plugin allowlist into the settings copy. The template
+# ships both keys as {} so the placeholders are visible even when a type has no
+# default plugins — that is where you add them by hand later.
+engagement_marketplaces=""
+for plugin_id in $ENGAGEMENT_PLUGINS; do
+    mkt="${plugin_id##*@}"
+    case " $engagement_marketplaces " in
+        *" $mkt="*) continue ;;   # already resolved
+    esac
+    engagement_marketplaces="$engagement_marketplaces $mkt=$(marketplace_source "$mkt")"
+done
+if ! ENGAGEMENT_PLUGINS="$ENGAGEMENT_PLUGINS" \
+     ENGAGEMENT_MARKETPLACES="$engagement_marketplaces" \
+     python3 - "$activity_name/.claude/settings.json" <<'PY'
+import json, os, sys
+
+path = sys.argv[1]
+markets = {}
+for pair in os.environ.get("ENGAGEMENT_MARKETPLACES", "").split():
+    name, _, repo = pair.partition("=")
+    markets[name] = {"source": {"source": "github", "repo": repo}}
+
+with open(path) as fh:
+    cfg = json.load(fh)
+# Both keys exist in the template, so assigning preserves their position near
+# the top of the file instead of appending them after the hooks block.
+cfg["extraKnownMarketplaces"] = markets
+cfg["enabledPlugins"] = {p: True for p in os.environ.get("ENGAGEMENT_PLUGINS", "").split()}
+with open(path, "w") as fh:
+    json.dump(cfg, fh, indent=2)
+    fh.write("\n")
+PY
+then
+    echo "ERROR: could not write the plugin allowlist into .claude/settings.json" >&2
+    exit 1
+fi
 # Shared hooks (used by both Claude and Codex) live in templates/hooks/;
 # check-report-format.sh is Claude-only and stays under templates/claude/hooks/.
 cp "$template_dir/hooks/"*.sh        "$activity_name/.claude/hooks/"
@@ -251,11 +335,15 @@ Structure for '$activity_name' created successfully.
   ref:         $CUSTOM_TOOLS_REF
   claude:      $CLAUDE_CHANNEL (refresh key $SCAFFOLD_DATE; auto-update ON — set
                DISABLE_AUTOUPDATER=1 in .devcontainer/.env to freeze the version)
+  plugins:     ${ENGAGEMENT_PLUGINS:-(none)}
   Dockerfile:  $activity_name/.devcontainer/Dockerfile
 
 Next steps:
   cd $activity_name/
   \$EDITOR _init_notes.txt                      # paste kickoff notes (then ask Claude to fill AGENTS.md from them)
+  \$EDITOR .claude/settings.json                # the engagement's plugin/marketplace allowlist (nothing comes from your host)
+  bash ~/custom-tools/org/sync-agent-plugins.sh . --dry-run
+                                               # ...preview what that list installs; postCreate applies it in the container
   python3 db/ptctl.py context explain           # audit the small session bootstrap
   python3 db/ptctl.py context pending           # list all open work on demand
   python3 db/ptctl.py board                     # full canonical registry, on demand

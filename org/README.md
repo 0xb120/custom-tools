@@ -259,15 +259,34 @@ Both are read-only binds and both must exist on the host, otherwise container cr
 
 MCP servers are declared per engagement: `.mcp.json` for Claude (project scope, auto-approved by `enableAllProjectMcpServers`) and a `codex mcp add` in `postCreateCommand` for Codex, which ignores project-scoped `mcp_servers`.
 
-Plugins are added per engagement, from inside the container, at project scope — so the choice is recorded in the engagement's own `.claude/settings.json`:
+## Per-engagement plugins
 
-```bash
-claude plugin marketplace add <owner>/<repo> --scope project
-claude plugin install <plugin>@<marketplace> --scope project -y
-claude plugin list --json          # id, version, enabled
+The engagement's plugin set lives in its own `.claude/settings.json`. That file is the single source of truth: it is what Claude Code reads, what `claude plugin install --scope project` writes, and what the sync step below applies — so hand-editing and the CLI converge on the same place.
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "trailofbits": { "source": { "source": "github", "repo": "trailofbits/skills" } }
+  },
+  "enabledPlugins": {
+    "burpsuite-project-parser@trailofbits": true,
+    "static-analysis@trailofbits": true
+  }
+}
 ```
 
-Enablement is driven entirely by `enabledPlugins`; a plugin with no entry there is inactive. Settings precedence is user < project < local < flag < policy.
+`newPT.sh` seeds the list from the engagement type — `web`/`external` get `burpsuite-project-parser` and `static-analysis`, `internal` the former, `full` those plus `audit-context-building`, and `cloud`/`mobile`/`lite`/`none` start empty. Both defaults tables live at the top of `newPT.sh`; every marketplace a plugin refers to must resolve in `marketplace_source()` or scaffolding refuses.
+
+Declaring is not enough on its own: a declared-but-uninstalled plugin gets its cache materialised but never loads, so its skills do not reach the session. `sync-agent-plugins.sh` performs the install, idempotently, and verifies the result:
+
+```bash
+bash ~/custom-tools/org/sync-agent-plugins.sh /workspace --dry-run   # print the plan
+bash ~/custom-tools/org/sync-agent-plugins.sh /workspace             # apply it
+```
+
+`postCreateCommand` runs it at container creation; run it again by hand after editing the list, then restart the agent — plugins load at session start. It applies the same list to Codex (`codex plugin add`), whose plugins are container-global since Codex has no project scope. Marketplaces are cloned over HTTPS (`CLAUDE_CODE_PLUGIN_PREFER_HTTPS`), so a public one needs no credentials inside the container.
+
+Keep the lists short: every enabled plugin costs always-on context in every session of the engagement. Enablement is driven entirely by `enabledPlugins` — a plugin with no entry there is inactive, and one set to `false` is declared but off. Settings precedence is user < project < local < flag < policy.
 
 ## Validate changes
 

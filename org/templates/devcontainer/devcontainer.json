@@ -53,10 +53,11 @@
     "--env-file", "${localWorkspaceFolder}/.devcontainer/.env"
   ],
   // Copy the two mounted credential files into the agents' config dirs (they are
-  // written to at token refresh, so they cannot be used from the read-only mount)
-  // and register the engagement's Burp MCP server for Codex, which ignores
-  // project-scoped mcp_servers. Nothing else is imported from the host: Claude
-  // regenerates a clean ~/.claude.json and starts with no plugins or marketplaces.
-  // Every step is non-fatal — a failure costs a manual login, not the container.
-  "postCreateCommand": "install -d -m 700 /home/pentester/.claude /home/pentester/.codex; install -m 600 /seed/claude-credentials.json /home/pentester/.claude/.credentials.json || echo '[!] Claude credential copy failed — run claude and log in manually'; install -m 600 /seed/codex-auth.json /home/pentester/.codex/auth.json || echo '[!] Codex credential copy failed — run codex login'; codex mcp get burp >/dev/null 2>&1 || codex mcp add burp -- npx -y mcp-remote {{BURP_MCP_URL}} || echo '[!] codex mcp add burp failed — add manually: codex mcp add burp -- npx -y mcp-remote {{BURP_MCP_URL}}'; echo 'Engagement container ready. Run: claude  (or: codex)'"
+  // written to at token refresh, so they cannot be used from the read-only mount),
+  // register the engagement's Burp MCP server for Codex (which ignores
+  // project-scoped mcp_servers), and install the plugins this engagement declares
+  // in .claude/settings.json. Nothing is imported from the host: Claude
+  // regenerates a clean ~/.claude.json and gets exactly the declared plugin set.
+  // Every step is non-fatal — a failure costs a manual command, not the container.
+  "postCreateCommand": "install -d -m 700 /home/pentester/.claude /home/pentester/.codex; install -m 600 /seed/claude-credentials.json /home/pentester/.claude/.credentials.json || echo '[!] Claude credential copy failed — run claude and log in manually'; install -m 600 /seed/codex-auth.json /home/pentester/.codex/auth.json || echo '[!] Codex credential copy failed — run codex login'; codex mcp get burp >/dev/null 2>&1 || codex mcp add burp -- npx -y mcp-remote {{BURP_MCP_URL}} || echo '[!] codex mcp add burp failed — add manually: codex mcp add burp -- npx -y mcp-remote {{BURP_MCP_URL}}'; bash /home/pentester/custom-tools/org/sync-agent-plugins.sh /workspace || echo '[!] plugin sync incomplete — fix .claude/settings.json, then: bash ~/custom-tools/org/sync-agent-plugins.sh /workspace'; echo 'Engagement container ready. Run: claude  (or: codex)'"
 }
