@@ -128,6 +128,21 @@ sqlite3 "$activity_name/db/engagement.db" < "$template_dir/db/schema.sql" >/dev/
 
 CUSTOM_TOOLS_REF="main"
 
+# Claude Code release channel baked into the engagement image.
+#   latest  (default) — newest release; what you want unless you have a reason.
+#   stable            — the slower release ring.
+#   X.Y.Z             — pin, for an engagement that must stay reproducible.
+# Override at scaffold time: CLAUDE_CHANNEL=stable bash newPT.sh web client-acme
+CLAUDE_CHANNEL="${CLAUDE_CHANNEL:-latest}"
+
+# Cache key for the thin Claude Code layer at the end of the Dockerfile. The
+# heavy toolchain layer above it is shared across engagements via the BuildKit
+# cache, which would otherwise pin every new engagement to whatever release was
+# current when that cache entry was first created. Stamping the scaffold date
+# here re-runs only the ~10s Claude layer per engagement. Engagements scaffolded
+# on the same day share it, which is exactly what we want.
+SCAFFOLD_DATE="$(date -u +%Y-%m-%d)"
+
 # Burp Suite MCP endpoint both agents connect to. Burp runs on the HOST with the
 # "MCP Server" extension; the container reaches it via --network=host. Transport
 # is SSE served at the ROOT path (verified against the extension: /sse and /mcp
@@ -150,6 +165,8 @@ sed -i \
     -e "s|{{INSTALL_GROUPS}}|$INSTALL_GROUPS|g" \
     -e "s|{{CUSTOM_TOOLS_REF}}|$CUSTOM_TOOLS_REF|g" \
     -e "s|{{BASE_IMAGE}}|$BASE_IMAGE|g" \
+    -e "s|{{CLAUDE_CHANNEL}}|$CLAUDE_CHANNEL|g" \
+    -e "s|{{SCAFFOLD_DATE}}|$SCAFFOLD_DATE|g" \
     "$activity_name/.devcontainer/Dockerfile" \
     "$activity_name/.devcontainer/devcontainer.json"
 
@@ -231,6 +248,8 @@ Structure for '$activity_name' created successfully.
   groups:      $INSTALL_GROUPS
   base:        $base ($BASE_IMAGE)
   ref:         $CUSTOM_TOOLS_REF
+  claude:      $CLAUDE_CHANNEL (refresh key $SCAFFOLD_DATE; auto-update ON — set
+               DISABLE_AUTOUPDATER=1 in .devcontainer/.env to freeze the version)
   Dockerfile:  $activity_name/.devcontainer/Dockerfile
 
 Next steps:
@@ -245,6 +264,8 @@ Next steps:
   # ...or do it by hand:
   bash .devcontainer/up.sh                     # builds + starts the container (BuildKit + ssh-agent checks)
   devcontainer exec --workspace-folder . claude
+  # Claude Code self-updates inside the container. To force a refresh without a rebuild:
+  #   devcontainer exec --workspace-folder . sudo bash ~/custom-tools/org/install-offsec-tools.sh --claude-only /opt
   # VS Code alternative: open the folder and accept "Reopen in Container" —
   #   requires DOCKER_BUILDKIT=1 host-wide (export in ~/.zshrc, or set
   #   {"features":{"buildkit":true}} in /etc/docker/daemon.json + restart docker).

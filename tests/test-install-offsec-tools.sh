@@ -68,4 +68,40 @@ grep -q 'npm install -g mcp-remote' "$SCRIPT" || \
     fail "install_AI must pre-install mcp-remote (Codex Burp MCP bridge)"
 pass "install_AI pre-installs mcp-remote"
 
+# --- Test 8: Claude Code installs natively, never as a root-owned npm global ---
+# This is what makes auto-update possible: `sudo npm install -g` puts the CLI in
+# /usr/local/lib/node_modules (root-owned), the non-root container user cannot
+# write there, the autoupdater fails, and the agent stays pinned to whatever
+# release the Docker layer was built with.
+grep -q 'npm install -g @anthropic-ai/claude-code' "$SCRIPT" && \
+    fail "Claude Code must NOT be installed via npm -g (root-owned tree breaks the autoupdater)"
+grep -q 'claude.ai/install.sh' "$SCRIPT" || \
+    fail "Claude Code must be installed via the native installer (claude.ai/install.sh)"
+grep -q 'as_user bash -c' "$SCRIPT" || \
+    fail "the native installer must run as the target user, not root (it refuses sudo)"
+grep -q 'npm uninstall -g @anthropic-ai/claude-code' "$SCRIPT" || \
+    fail "a legacy root-owned npm global install should be cleaned up after migrating"
+pass "Claude Code uses the native, user-owned installer (autoupdater can self-heal)"
+
+# --- Test 9: --claude-only refreshes just the agent, skipping every group ---
+output="$(bash "$SCRIPT" --dry-run --claude-only /tmp)" || fail "--claude-only dry-run failed"
+[ "$output" = "install_claude_code" ] || \
+    fail "--claude-only should resolve to install_claude_code alone, got: $output"
+output="$(bash "$SCRIPT" --dry-run --claude-only=2.1.263 /tmp)" \
+    || fail "--claude-only=<version> dry-run failed"
+[ "$output" = "install_claude_code" ] || \
+    fail "--claude-only=<version> should resolve to install_claude_code alone, got: $output"
+# The refresh path must stop before the system-wide passes: the trailing
+# `chmod -R` over INSTALL_DIR would rewrite metadata for the whole toolchain,
+# which inside a Docker build means a layer carrying a copy of every file.
+grep -q 'CLAUDE_ONLY.*-eq 1' "$SCRIPT" || \
+    fail "--claude-only needs an early-exit guard before the system-wide passes"
+pass "--claude-only is a surgical, group-free Claude Code refresh"
+
+# --- Test 10: the release channel is selectable (pin for reproducible engagements) ---
+grep -q 'CLAUDE_CHANNEL="\${CLAUDE_CHANNEL:-latest}"' "$SCRIPT" || \
+    fail "CLAUDE_CHANNEL must default to 'latest' and stay env-overridable"
+bash "$SCRIPT" --dry-run --claude-only /tmp >/dev/null || fail "default channel path broke"
+pass "Claude Code release channel defaults to latest and is overridable"
+
 echo "All tests passed."

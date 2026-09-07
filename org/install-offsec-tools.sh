@@ -92,6 +92,12 @@ Options:
                      (The Go toolchain is now installed unconditionally by
                      'base' — every downstream group that uses `go install`
                      depends on it, so it is no longer a selectable group.)
+  --claude-only[=ch] Install/refresh ONLY Claude Code, skipping every group.
+                     <ch> is the release channel: latest (default) | stable |
+                     X.Y.Z to pin. Also settable as CLAUDE_CHANNEL in the env.
+                     Used by the engagement Dockerfile's thin final layer so a
+                     rebuild always lands the current release even when the
+                     heavy toolchain layer comes from the BuildKit cache.
   -k, --insecure     Disable TLS certificate verification for curl, wget, git,
                      go module fetches, pip/pipx, and apt HTTPS sources. Use
                      ONLY behind a trusted MITM proxy (e.g. corporate egress
@@ -102,6 +108,8 @@ Options:
 Examples:
   $0 /opt
   $0 --insecure /opt
+  $0 --claude-only /opt              # refresh Claude Code to the latest release
+  $0 --claude-only=2.1.263 /opt      # pin Claude Code for a reproducible engagement
 EOF
     exit 1
 }
@@ -110,11 +118,17 @@ INSECURE=0
 DRY_RUN=0
 REQUESTED_GROUPS=""
 GROUPS_PROVIDED=0
+CLAUDE_ONLY=0
+# Release channel for Claude Code. Env-overridable so container builds can pass
+# it without a flag; --claude-only=<channel> wins over the environment.
+CLAUDE_CHANNEL="${CLAUDE_CHANNEL:-latest}"
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -k|--insecure)    INSECURE=1; shift ;;
         -n|--dry-run)     DRY_RUN=1; shift ;;
         --groups=*)       REQUESTED_GROUPS="${1#--groups=}"; GROUPS_PROVIDED=1; shift ;;
+        --claude-only)    CLAUDE_ONLY=1; shift ;;
+        --claude-only=*)  CLAUDE_ONLY=1; CLAUDE_CHANNEL="${1#--claude-only=}"; shift ;;
         -h|--help)        usage ;;
         --)            shift; break ;;
         -*)            echo "ERROR: unknown flag: $1"; usage ;;
@@ -346,6 +360,56 @@ install_go() {
     hash -r
 }
 
+# Install (or refresh) Claude Code via Anthropic's NATIVE installer, never via
+# `sudo npm install -g`. The distinction is what makes auto-update possible:
+#
+#   native  -> $TARGET_HOME/.local/bin/claude, a symlink into
+#              $TARGET_HOME/.local/share/claude/versions/<v>. The whole tree is
+#              owned by the invoking user, so Claude's built-in autoupdater can
+#              swap the binary in place — a container image built weeks ago
+#              self-heals to the current release on first launch.
+#   npm -g  -> /usr/local/lib/node_modules, owned by root. The non-root
+#              container user (`pentester`) cannot write there, so the
+#              autoupdater fails and the agent stays pinned to whatever version
+#              the Docker layer happened to be built with. Forever.
+#
+# Upstream's install.sh refuses to run under sudo for exactly this reason, so
+# it goes through as_user — same idiom as the uv install in install_base.
+#
+# $1: release channel, defaulting to $CLAUDE_CHANNEL (--claude-only=<ch> / env)
+#     and then to 'latest' — stable and X.Y.Z (a pin) are the other values.
+# Idempotent: on an existing native install it calls `claude install <channel>`,
+# which is a no-op when the requested version is already the one on disk.
+install_claude_code() {
+    local channel="${1:-${CLAUDE_CHANNEL:-latest}}"
+    local claude_bin="$TARGET_HOME/.local/bin/claude"
+
+    if [ -x "$claude_bin" ]; then
+        echo "[+] Refreshing Claude Code ($(as_user "$claude_bin" --version 2>/dev/null || echo unknown) -> '$channel')..."
+        as_user "$claude_bin" install "$channel" \
+            || echo "[!] claude install '$channel' failed — keeping the version already on disk"
+    else
+        echo "[+] Installing Claude Code ('$channel')..."
+        as_user bash -c \
+            "curl $CURL_INSECURE -fsSL https://claude.ai/install.sh | bash -s '$channel'" \
+            || { echo "[!] Claude Code install failed — the engagement container needs it on PATH" >&2; return 1; }
+    fi
+
+    # A root-owned npm global copy left over from an older run of this script
+    # loses the PATH race (~/.local/bin precedes /usr/local/bin everywhere we
+    # configure it) but can never self-update and shows up as a second install
+    # in `claude doctor`. Drop it now that the native one is in place.
+    local npm_root
+    if command -v npm >/dev/null 2>&1; then
+        npm_root="$(npm root -g 2>/dev/null || true)"
+        if [ -n "$npm_root" ] && [ -d "$npm_root/@anthropic-ai/claude-code" ]; then
+            echo "[+] Removing the legacy root-owned npm global claude-code (superseded by the native install)"
+            sudo npm uninstall -g @anthropic-ai/claude-code >/dev/null 2>&1 \
+                || echo "[!] npm uninstall -g @anthropic-ai/claude-code failed — remove it by hand"
+        fi
+    fi
+}
+
 # --- Tool Modules ---
 
 install_base() {
@@ -383,11 +447,9 @@ install_base() {
     # Claude Code — Anthropic's CLI. Lives in install_base (not install_AI)
     # because every engagement container assumes `claude` is on PATH regardless
     # of which AI assistant groups the operator picked.
-    if command -v claude >/dev/null 2>&1; then
-        echo "[=] claude already installed: $(claude --version 2>/dev/null) — skipping"
-    else
-        sudo npm install -g @anthropic-ai/claude-code
-    fi
+    # See install_claude_code above for why this is the native installer and
+    # not `npm -g`; CLAUDE_CHANNEL / --claude-only=<ch> pick the release.
+    install_claude_code
 
     as_user pipx ensurepath
 
@@ -880,6 +942,14 @@ else
     done
 fi
 
+# --claude-only overrides group selection entirely. install_claude_code is not
+# a selectable group (it is part of 'base', which every engagement gets); this
+# flag is the standalone refresh path for container rebuilds and for operators
+# who want to bump the CLI without re-running the whole toolchain.
+if [ "$CLAUDE_ONLY" -eq 1 ]; then
+    INSTALL_FNS=(install_claude_code)
+fi
+
 if [ "$DRY_RUN" -eq 1 ]; then
     printf '%s\n' "${INSTALL_FNS[@]}"
     exit 0
@@ -888,6 +958,16 @@ fi
 for fn in "${INSTALL_FNS[@]}"; do
     "$fn"
 done
+
+# --claude-only is a surgical refresh: stop before the system-wide PATH,
+# ownership and permission passes below. They are no-ops for a CLI that lives
+# entirely under ~/.local — and the trailing `chmod -R` over $INSTALL_DIR would
+# rewrite metadata for the whole toolchain, which inside a Docker build means a
+# new layer carrying a copy of every file under /opt.
+if [ "$CLAUDE_ONLY" -eq 1 ]; then
+    echo "[+] Claude Code refresh finished."
+    exit 0
+fi
 
 # Make the tool PATH available to non-interactive SSH sessions (n8n, cron, ...).
 # Tools live where their package manager puts them — no copying to /usr/local/bin:

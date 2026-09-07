@@ -148,6 +148,58 @@ grep -q "unknown base" /tmp/np.err || fail "stderr should mention 'unknown base'
 grep -q "alpine" /tmp/np.err || fail "stderr should name the offending base"
 pass "unknown base name exits 1 with helpful stderr"
 
+# --- Test 5d: the image always lands the CURRENT Claude Code release ---
+# The engagement Dockerfile refreshes Claude Code in a thin trailing layer,
+# keyed on the scaffold date. Two properties make that work, and both are
+# asserted here because breaking either silently ships a stale agent:
+#   1. the refresh RUN must come AFTER the heavy install-offsec-tools.sh layer,
+#      or a changed cache key would invalidate the 30-minute toolchain build;
+#   2. CLAUDE_REFRESH must carry a per-scaffold value, or BuildKit reuses the
+#      cached layer and the new engagement inherits an old release.
+cd "$TMP"
+dockerfile="engagement-internal/.devcontainer/Dockerfile"
+grep -q '^ARG CLAUDE_CHANNEL=' "$dockerfile" || \
+    fail "Dockerfile must declare ARG CLAUDE_CHANNEL"
+grep -q '^ARG CLAUDE_REFRESH=' "$dockerfile" || \
+    fail "Dockerfile must declare ARG CLAUDE_REFRESH (the refresh layer's cache key)"
+grep -q -- '--claude-only=' "$dockerfile" || \
+    fail "Dockerfile refresh layer must call install-offsec-tools.sh --claude-only=<channel>"
+grep -q '\${CLAUDE_REFRESH}' "$dockerfile" || \
+    fail "the refresh RUN must reference \${CLAUDE_REFRESH}, or BuildKit ignores the cache key"
+main_layer="$(grep -n 'install-offsec-tools.sh \\$' "$dockerfile" | head -1 | cut -d: -f1)"
+refresh_layer="$(grep -n -- '--claude-only=' "$dockerfile" | head -1 | cut -d: -f1)"
+[ -n "$main_layer" ] && [ -n "$refresh_layer" ] && [ "$main_layer" -lt "$refresh_layer" ] || \
+    fail "the Claude refresh layer must come AFTER the toolchain layer (main=$main_layer refresh=$refresh_layer)"
+# Never resurrect the root-owned npm global install: it cannot self-update.
+grep -q 'npm install -g @anthropic-ai/claude-code' "$dockerfile" && \
+    fail "Dockerfile must not install Claude Code via npm -g (breaks the autoupdater)"
+# Build args carry the channel and a dated (per-scaffold) refresh key.
+dcjson="engagement-internal/.devcontainer/devcontainer.json"
+grep -q '"CLAUDE_CHANNEL": "latest"' "$dcjson" || \
+    fail "devcontainer.json must default CLAUDE_CHANNEL to 'latest'"
+grep -qE '"CLAUDE_REFRESH": "[0-9]{4}-[0-9]{2}-[0-9]{2}"' "$dcjson" || \
+    fail "devcontainer.json CLAUDE_REFRESH must be the scaffold date (YYYY-MM-DD)"
+pass "Dockerfile refreshes Claude Code in a thin trailing layer keyed on the scaffold date"
+
+# --- Test 5e: auto-update is on by default and documented as switchable ---
+grep -q 'DISABLE_AUTOUPDATER' engagement-internal/.devcontainer/Dockerfile || \
+    fail "Dockerfile should document the DISABLE_AUTOUPDATER escape hatch"
+output="$(bash "$SCRIPT" lite engagement-autoupd)" || fail "newPT.sh lite engagement-autoupd failed"
+echo "$output" | grep -q "claude:[[:space:]]*latest" || \
+    fail "post-scaffold output should name the Claude Code channel"
+echo "$output" | grep -q "DISABLE_AUTOUPDATER" || \
+    fail "post-scaffold output should point at the auto-update off-switch"
+pass "auto-update on by default, off-switch surfaced at scaffold time"
+
+# --- Test 5f: CLAUDE_CHANNEL env override pins the release (reproducible engagements) ---
+cd "$TMP"
+rm -rf engagement-pinned
+CLAUDE_CHANNEL="2.1.263" bash "$SCRIPT" lite engagement-pinned >/dev/null
+grep -q '"CLAUDE_CHANNEL": "2.1.263"' engagement-pinned/.devcontainer/devcontainer.json || \
+    fail "CLAUDE_CHANNEL env override should flow into the devcontainer build args"
+cd "$TMP"
+pass "CLAUDE_CHANNEL env override pins the Claude Code release at scaffold time"
+
 # --- Test 6: scaffolding drops .claude/settings.json verbatim ---
 test -f engagement-internal/.claude/settings.json || fail ".claude/settings.json missing"
 grep -q "bypassPermissions" engagement-internal/.claude/settings.json || \
