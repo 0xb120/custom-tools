@@ -54,6 +54,22 @@ if ! ssh-add -l >/dev/null 2>&1; then
     exit 1
 fi
 
+# Agent credentials. devcontainer.json mounts exactly two files from the host —
+# the Claude and Codex tokens — and nothing else from ~/.claude / ~/.codex, so
+# the engagement's plugins, marketplaces and MCP servers stay per-engagement.
+# Those are --mount-style binds: docker aborts container creation if a source
+# file does not exist, so check here and say what to do about it.
+missing=()
+[ -f "$HOME/.claude/.credentials.json" ] || missing+=("~/.claude/.credentials.json   run 'claude' on the host and log in")
+[ -f "$HOME/.codex/auth.json" ]          || missing+=("~/.codex/auth.json            run 'codex login' on the host")
+if [ "${#missing[@]}" -gt 0 ]; then
+    echo "[!] host credential file(s) missing — the container mounts these read-only:" >&2
+    printf '      %s\n' "${missing[@]}" >&2
+    echo "    Log in on the host once, or delete that mount line from" >&2
+    echo "    .devcontainer/devcontainer.json and log in inside the container instead." >&2
+    exit 1
+fi
+
 # --pull: repoint the local base-image tag at the published one before building.
 # There is no --pull on `devcontainer up`, and none is needed: `FROM <tag>` in
 # the Dockerfile resolves the LOCAL tag, so pulling here is what decides which

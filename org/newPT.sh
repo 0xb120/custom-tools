@@ -3,9 +3,13 @@
 usage() {
     cat >&2 <<EOF
 Usage: $0 <type> <activity_name> [<base>]
-  <type>: web | external | internal | cloud | mobile | full | lite | none
+  <type>: web | external | internal | cloud | mobile | code | full | lite | none
   <base>: debian (default) | kali
 
+  code — white-box source review: SAST toolchain (semgrep + rules, gitleaks,
+         jsluice, detect-secrets) and the source-oriented agent plugins, without
+         the network recon/scanner stack. For secure code reviews, and for a
+         black-box engagement that later receives the source.
   lite — minimal engagement profile: only base (Claude Code + core utilities),
          utils (Go CLI helpers), and AI (Codex, sgpt, Strix). Useful when you
          don't need the recon/scanner toolchain (e.g. desk research, report
@@ -22,6 +26,7 @@ Usage: $0 <type> <activity_name> [<base>]
 Examples:
   $0 web      client-acme
   $0 internal acme-internal-2026q2
+  $0 code     client-acme-srcreview
   $0 lite     client-deskreview
   $0 web      client-acme         kali
   $0 none     client-docs-only
@@ -29,22 +34,27 @@ EOF
     exit 1
 }
 
-# Internal debug flag used by tests/test-newPT.sh — prints the INSTALL_GROUPS
-# string the script would resolve for the given type, without scaffolding.
-# Not advertised in the usage banner.
-if [ "${1:-}" = "--print-groups" ]; then
-    [ "$#" -eq 2 ] || { echo "Usage: $0 --print-groups <type>" >&2; exit 1; }
-    type="$2"
-    activity_name=""
-    base="debian"
-else
-    if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
-        usage
-    fi
-    type="$1"
-    activity_name="$2"
-    base="${3:-debian}"
-fi
+# Internal debug flags used by tests/test-newPT.sh — print the INSTALL_GROUPS or
+# the plugin allowlist the script would resolve for the given type, without
+# scaffolding. Not advertised in the usage banner.
+PRINT_MODE=""
+case "${1:-}" in
+    --print-groups|--print-plugins|--print-plugin-groups)
+        [ "$#" -eq 2 ] || { echo "Usage: $0 $1 <type>" >&2; exit 1; }
+        PRINT_MODE="$1"
+        type="$2"
+        activity_name=""
+        base="debian"
+        ;;
+    *)
+        if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+            usage
+        fi
+        type="$1"
+        activity_name="$2"
+        base="${3:-debian}"
+        ;;
+esac
 
 # Map base alias → concrete image tag. Both bases are Debian-derived, so
 # install-offsec-tools.sh works on either without per-distro branches (the
@@ -67,6 +77,7 @@ case "$type" in
     internal) INSTALL_GROUPS="base,PD,tomnomnom,recon,cracking,RT,utils,AI" ;;
     cloud)    INSTALL_GROUPS="base,cloud,utils,AI" ;;
     mobile)   INSTALL_GROUPS="base,reversing,utils,AI" ;;
+    code)     INSTALL_GROUPS="base,sast,utils,AI" ;;
     full)     INSTALL_GROUPS="base,PD,praetorian,tomnomnom,recon,takeover,dictionary,sast,dast,cracking,RT,cloud,reversing,utils,AI" ;;
     lite)     INSTALL_GROUPS="base,utils,AI" ;;
     none)     INSTALL_GROUPS="none" ;;   # install-offsec-tools.sh sentinel — exits 0 without touching the system
@@ -76,11 +87,105 @@ case "$type" in
         ;;
 esac
 
-# --print-groups short-circuit: print resolved groups and exit before any I/O.
-if [ -z "$activity_name" ]; then
-    echo "$INSTALL_GROUPS"
+# Marketplace id -> the source string `plugin marketplace add` accepts (GitHub
+# owner/repo here; a URL or a local path work too). Every marketplace named
+# below — base or referenced by a plugin — must resolve here, otherwise the sync
+# step cannot find the plugin. Add a row when you start using a new marketplace.
+marketplace_source() {
+    case "$1" in
+        trailofbits)             echo "trailofbits/skills" ;;
+        claude-plugins-official) echo "anthropics/claude-plugins-official" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Marketplaces every engagement declares, whether or not it enables a plugin
+# from them. Declaring one is what makes it browsable in `/plugin` and
+# installable by name mid-engagement (`claude plugin install <x>@trailofbits`)
+# without adding the marketplace first. The official marketplace is not listed:
+# Claude Code registers that one itself on first launch.
+BASE_MARKETPLACES="trailofbits"
+
+# Plugin groups — the plugin analogue of INSTALL_GROUPS. A group is a named
+# bundle; a type maps to a comma-separated list of groups, expanded to concrete
+# ids here at scaffold time because .claude/settings.json has to carry the ids
+# (that file is what Claude Code actually reads).
+#
+# Most of the trailofbits catalogue is source-code oriented, and a black-box
+# engagement has no source: 'sast' and 'codereview' deliberately stay out of the
+# black-box types, so you don't pay always-on context for skills you cannot use.
+# When the client hands over the source, adding a group is a one-word edit here
+# — or install the plugin directly into the running engagement with
+# `claude plugin install <plugin>@<marketplace> --scope project`.
+plugin_group() {
+    case "$1" in
+        burp)        echo "burpsuite-project-parser@trailofbits" ;;
+        triage)      echo "fp-check@trailofbits" ;;
+        sast)        echo "static-analysis@trailofbits semgrep-rule-creator@trailofbits insecure-defaults@trailofbits variant-analysis@trailofbits" ;;
+        codereview)  echo "audit-context-building@trailofbits sharp-edges@trailofbits differential-review@trailofbits" ;;
+        mobile)      echo "firebase-apk-scanner@trailofbits c-review@trailofbits dwarf-expert@trailofbits" ;;
+        supplychain) echo "supply-chain-risk-auditor@trailofbits agentic-actions-auditor@trailofbits" ;;
+        *) return 1 ;;
+    esac
+}
+PLUGIN_GROUP_NAMES="burp triage sast codereview mobile supplychain"
+
+case "$type" in
+    web)      PLUGIN_GROUPS="burp,triage" ;;
+    external) PLUGIN_GROUPS="burp,triage,supplychain" ;;
+    internal) PLUGIN_GROUPS="triage" ;;
+    cloud)    PLUGIN_GROUPS="triage,supplychain" ;;
+    mobile)   PLUGIN_GROUPS="mobile,triage" ;;
+    code)     PLUGIN_GROUPS="sast,codereview,triage" ;;
+    full)     PLUGIN_GROUPS="burp,triage,sast,codereview,mobile,supplychain" ;;
+    *)        PLUGIN_GROUPS="" ;;   # lite, none — nothing enabled, marketplace still available
+esac
+
+# Expand groups -> concrete plugin ids, order-preserving and deduplicated.
+ENGAGEMENT_PLUGINS=""
+for group in $(echo "$PLUGIN_GROUPS" | tr ',' ' '); do
+    group_ids="$(plugin_group "$group")" || {
+        echo "ERROR: unknown plugin group '$group'" >&2
+        echo "       valid groups: $PLUGIN_GROUP_NAMES" >&2
+        exit 1
+    }
+    for plugin_id in $group_ids; do
+        case " $ENGAGEMENT_PLUGINS " in
+            *" $plugin_id "*) continue ;;   # already pulled in by an earlier group
+        esac
+        ENGAGEMENT_PLUGINS="${ENGAGEMENT_PLUGINS:+$ENGAGEMENT_PLUGINS }$plugin_id"
+    done
+done
+
+# --print-* short-circuit: print the resolved value and exit before any I/O.
+if [ -n "$PRINT_MODE" ]; then
+    case "$PRINT_MODE" in
+        --print-groups)        echo "$INSTALL_GROUPS" ;;
+        --print-plugins)       echo "$ENGAGEMENT_PLUGINS" ;;
+        --print-plugin-groups) echo "$PLUGIN_GROUPS" ;;
+    esac
     exit 0
 fi
+
+# Fail early on a typo in the tables above rather than at container postCreate.
+for plugin_id in $ENGAGEMENT_PLUGINS; do
+    case "$plugin_id" in
+        *@*) ;;
+        *) echo "ERROR: plugin '$plugin_id' must be <plugin>@<marketplace>" >&2; exit 1 ;;
+    esac
+    marketplace_source "${plugin_id##*@}" >/dev/null || {
+        echo "ERROR: no marketplace source known for '${plugin_id##*@}'" >&2
+        echo "       add it to marketplace_source() in $0" >&2
+        exit 1
+    }
+done
+for marketplace in $BASE_MARKETPLACES; do
+    marketplace_source "$marketplace" >/dev/null || {
+        echo "ERROR: no marketplace source known for base marketplace '$marketplace'" >&2
+        echo "       add it to marketplace_source() in $0" >&2
+        exit 1
+    }
+done
 
 # Create the folder structure
 mkdir -p "$activity_name"/{attachments,scans,poc,findings,wl,logs}
@@ -192,6 +297,46 @@ cp "$template_dir/devcontainer/gitignore" "$activity_name/.devcontainer/.gitigno
 # (command audit, DB→Markdown auto-render, report formatting, stop-time doctor).
 mkdir -p "$activity_name/.claude/hooks"
 cp "$template_dir/claude/settings.json" "$activity_name/.claude/settings.json"
+
+# Write the engagement's plugin allowlist into the settings copy. The template
+# ships both keys as {} so the placeholders are visible even when a type has no
+# default plugins — that is where you add them by hand later.
+#
+# Marketplaces = the always-declared base set, then any additional one a plugin
+# comes from. The base set stays even for a type with no plugins, so /plugin can
+# browse it and `plugin install` resolves names mid-engagement.
+engagement_marketplaces=""
+for marketplace in $BASE_MARKETPLACES $(for p in $ENGAGEMENT_PLUGINS; do echo "${p##*@}"; done); do
+    case " $engagement_marketplaces " in
+        *" $marketplace="*) continue ;;   # already resolved
+    esac
+    engagement_marketplaces="$engagement_marketplaces $marketplace=$(marketplace_source "$marketplace")"
+done
+if ! ENGAGEMENT_PLUGINS="$ENGAGEMENT_PLUGINS" \
+     ENGAGEMENT_MARKETPLACES="$engagement_marketplaces" \
+     python3 - "$activity_name/.claude/settings.json" <<'PY'
+import json, os, sys
+
+path = sys.argv[1]
+markets = {}
+for pair in os.environ.get("ENGAGEMENT_MARKETPLACES", "").split():
+    name, _, repo = pair.partition("=")
+    markets[name] = {"source": {"source": "github", "repo": repo}}
+
+with open(path) as fh:
+    cfg = json.load(fh)
+# Both keys exist in the template, so assigning preserves their position near
+# the top of the file instead of appending them after the hooks block.
+cfg["extraKnownMarketplaces"] = markets
+cfg["enabledPlugins"] = {p: True for p in os.environ.get("ENGAGEMENT_PLUGINS", "").split()}
+with open(path, "w") as fh:
+    json.dump(cfg, fh, indent=2)
+    fh.write("\n")
+PY
+then
+    echo "ERROR: could not write the plugin allowlist into .claude/settings.json" >&2
+    exit 1
+fi
 # Shared hooks (used by both Claude and Codex) live in templates/hooks/;
 # check-report-format.sh is Claude-only and stays under templates/claude/hooks/.
 cp "$template_dir/hooks/"*.sh        "$activity_name/.claude/hooks/"
@@ -251,11 +396,16 @@ Structure for '$activity_name' created successfully.
   ref:         $CUSTOM_TOOLS_REF
   claude:      $CLAUDE_CHANNEL (refresh key $SCAFFOLD_DATE; auto-update ON — set
                DISABLE_AUTOUPDATER=1 in .devcontainer/.env to freeze the version)
+  plugin grp:  ${PLUGIN_GROUPS:-(none)}
+  plugins:     ${ENGAGEMENT_PLUGINS:-(none — marketplaces still declared: $BASE_MARKETPLACES)}
   Dockerfile:  $activity_name/.devcontainer/Dockerfile
 
 Next steps:
   cd $activity_name/
   \$EDITOR _init_notes.txt                      # paste kickoff notes (then ask Claude to fill AGENTS.md from them)
+  \$EDITOR .claude/settings.json                # the engagement's plugin/marketplace allowlist (nothing comes from your host)
+  bash ~/custom-tools/org/sync-agent-plugins.sh . --dry-run
+                                               # ...preview what that list installs; postCreate applies it in the container
   python3 db/ptctl.py context explain           # audit the small session bootstrap
   python3 db/ptctl.py context pending           # list all open work on demand
   python3 db/ptctl.py board                     # full canonical registry, on demand

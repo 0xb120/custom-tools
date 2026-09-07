@@ -48,6 +48,7 @@ declare -A EXPECTED=(
     [internal]="base,PD,tomnomnom,recon,cracking,RT,utils,AI"
     [cloud]="base,cloud,utils,AI"
     [mobile]="base,reversing,utils,AI"
+    [code]="base,sast,utils,AI"
     [full]="base,PD,praetorian,tomnomnom,recon,takeover,dictionary,sast,dast,cracking,RT,cloud,reversing,utils,AI"
     [lite]="base,utils,AI"
     [none]="none"
@@ -58,6 +59,54 @@ for t in "${!EXPECTED[@]}"; do
     [ "$got" = "${EXPECTED[$t]}" ] || fail "type=$t expected '${EXPECTED[$t]}' got '$got'"
 done
 pass "every <type> maps to the documented INSTALL_GROUPS"
+
+# --- Test 4b: each <type> resolves to its plugin groups and their expansion ---
+# Containers inherit no plugins from the host, so these tables are the only thing
+# that decides what an engagement starts with. Groups per type, and the concrete ids they expand to. Both are asserted: the
+# group list is the thing an operator edits, the expansion is what reaches
+# .claude/settings.json.
+declare -A EXPECTED_PLUGIN_GROUPS=(
+    [web]="burp,triage"
+    [external]="burp,triage,supplychain"
+    [internal]="triage"
+    [cloud]="triage,supplychain"
+    [mobile]="mobile,triage"
+    [code]="sast,codereview,triage"
+    [full]="burp,triage,sast,codereview,mobile,supplychain"
+    [lite]=""
+    [none]=""
+)
+BURP="burpsuite-project-parser@trailofbits"
+TRIAGE="fp-check@trailofbits"
+SAST="static-analysis@trailofbits semgrep-rule-creator@trailofbits insecure-defaults@trailofbits variant-analysis@trailofbits"
+CODEREVIEW="audit-context-building@trailofbits sharp-edges@trailofbits differential-review@trailofbits"
+MOBILE="firebase-apk-scanner@trailofbits c-review@trailofbits dwarf-expert@trailofbits"
+SUPPLYCHAIN="supply-chain-risk-auditor@trailofbits agentic-actions-auditor@trailofbits"
+declare -A EXPECTED_PLUGINS=(
+    [web]="$BURP $TRIAGE"
+    [external]="$BURP $TRIAGE $SUPPLYCHAIN"
+    [internal]="$TRIAGE"
+    [cloud]="$TRIAGE $SUPPLYCHAIN"
+    [mobile]="$MOBILE $TRIAGE"
+    [code]="$SAST $CODEREVIEW $TRIAGE"
+    [full]="$BURP $TRIAGE $SAST $CODEREVIEW $MOBILE $SUPPLYCHAIN"
+    [lite]=""
+    [none]=""
+)
+for t in "${!EXPECTED_PLUGINS[@]}"; do
+    got="$(bash "$SCRIPT" --print-plugin-groups "$t")" \
+        || fail "--print-plugin-groups $t failed"
+    [ "$got" = "${EXPECTED_PLUGIN_GROUPS[$t]}" ] || \
+        fail "type=$t expected groups '${EXPECTED_PLUGIN_GROUPS[$t]}' got '$got'"
+    got="$(bash "$SCRIPT" --print-plugins "$t")" \
+        || fail "--print-plugins $t failed"
+    [ "$got" = "${EXPECTED_PLUGINS[$t]}" ] || \
+        fail "type=$t expected plugins '${EXPECTED_PLUGINS[$t]}' got '$got'"
+done
+# Groups compose without duplicating a plugin two of them share.
+[ "$(bash "$SCRIPT" --print-plugins full | tr ' ' '\n' | sort | uniq -d)" = "" ] || \
+    fail "overlapping groups must not repeat a plugin id"
+pass "every <type> maps to the documented plugin groups and their expansion"
 
 # --- Test 5: scaffolding 'internal' engagement drops .devcontainer/ with substituted INSTALL_GROUPS ---
 cd "$TMP"
@@ -79,11 +128,31 @@ grep -q -- '--dangerously-bypass-approvals-and-sandbox' engagement-internal/yolo
 grep -q -- '--dangerously-bypass-hook-trust' engagement-internal/yolo-codex.sh || \
     fail "yolo-codex.sh must pass --dangerously-bypass-hook-trust"
 
-# devcontainer.json mounts host ~/.codex and seeds it on postCreate
-grep -q 'target=/seed/host-codex' engagement-internal/.devcontainer/devcontainer.json || \
-    fail "devcontainer.json must bind-mount host ~/.codex to /seed/host-codex"
-grep -q 'seed-codex-env.sh apply /seed/host-codex' engagement-internal/.devcontainer/devcontainer.json || \
-    fail "devcontainer.json postCreate must seed Codex config"
+# devcontainer.json mounts the two agent credential FILES and nothing else from
+# the host's agent config: plugins, marketplaces and MCP servers are declared per
+# engagement, never inherited from the operator's workstation.
+DCJ=engagement-internal/.devcontainer/devcontainer.json
+grep -q 'HOME}/.claude/.credentials.json,target=/seed/claude-credentials.json' "$DCJ" || \
+    fail "devcontainer.json must bind-mount the host Claude credentials file"
+grep -q 'HOME}/.codex/auth.json,target=/seed/codex-auth.json' "$DCJ" || \
+    fail "devcontainer.json must bind-mount the host Codex auth file"
+grep -qE 'HOME\}/\.(claude|codex),target=' "$DCJ" && \
+    fail "devcontainer.json must NOT bind-mount the whole host ~/.claude or ~/.codex"
+grep -q 'seed-claude-env\|seed-codex-env\|/seed/host-' "$DCJ" && \
+    fail "devcontainer.json must not reference the removed host-config seeders"
+grep -q 'install -m 600 /seed/claude-credentials.json' "$DCJ" || \
+    fail "devcontainer.json postCreate must install the Claude credentials"
+grep -q 'install -m 600 /seed/codex-auth.json' "$DCJ" || \
+    fail "devcontainer.json postCreate must install the Codex auth file"
+grep -q 'sync-agent-plugins.sh /workspace' "$DCJ" || \
+    fail "devcontainer.json postCreate must install the engagement's declared plugins"
+
+# up.sh must pre-check both credential files: they are --mount-style binds, so a
+# missing source aborts `devcontainer up` with a raw docker error otherwise.
+grep -q '.claude/.credentials.json' engagement-internal/.devcontainer/up.sh || \
+    fail "up.sh must pre-check the host Claude credentials file"
+grep -q '.codex/auth.json' engagement-internal/.devcontainer/up.sh || \
+    fail "up.sh must pre-check the host Codex auth file"
 
 # {{PLACEHOLDER}} markers should all be substituted
 grep -q "{{" engagement-internal/.devcontainer/devcontainer.json && \
@@ -235,17 +304,37 @@ grep -q '"CLAUDE_CHANNEL": "2.1.263"' engagement-pinned/.devcontainer/devcontain
 cd "$TMP"
 pass "CLAUDE_CHANNEL env override pins the Claude Code release at scaffold time"
 
-# --- Test 6: scaffolding drops .claude/settings.json verbatim ---
-test -f engagement-internal/.claude/settings.json || fail ".claude/settings.json missing"
-grep -q "bypassPermissions" engagement-internal/.claude/settings.json || \
+# --- Test 6: scaffolding drops .claude/settings.json with the plugin allowlist ---
+SET=engagement-internal/.claude/settings.json
+test -f "$SET" || fail ".claude/settings.json missing"
+grep -q "bypassPermissions" "$SET" || \
     fail ".claude/settings.json should contain bypassPermissions"
-grep -q "SessionStart" engagement-internal/.claude/settings.json || \
+grep -q "SessionStart" "$SET" || \
     fail ".claude/settings.json should define a SessionStart hook"
-# Verify file is byte-identical to the template (no substitution applied)
-diff -q engagement-internal/.claude/settings.json \
-        "$(dirname "$SCRIPT")/templates/claude/settings.json" \
-    >/dev/null || fail ".claude/settings.json should be a verbatim copy of the template"
-pass ".claude/settings.json scaffolded verbatim from template"
+jq -e . "$SET" >/dev/null || fail ".claude/settings.json must stay valid JSON after injection"
+# Everything the template carries verbatim must survive the plugin injection.
+jq -e '.hooks.PreToolUse and .permissions.defaultMode == "bypassPermissions"' "$SET" >/dev/null || \
+    fail ".claude/settings.json lost template content during plugin injection"
+# internal => one plugin, and the marketplace it comes from, resolved to a source
+jq -e '.enabledPlugins == {"fp-check@trailofbits": true}' "$SET" >/dev/null || \
+    fail ".claude/settings.json must carry the internal profile's plugin allowlist"
+jq -e '.extraKnownMarketplaces.trailofbits.source.repo == "trailofbits/skills"' "$SET" >/dev/null || \
+    fail ".claude/settings.json must declare the marketplace each plugin comes from"
+pass ".claude/settings.json scaffolded with the engagement's plugin allowlist"
+
+# --- Test 6a: a type with no default plugins still shows the empty placeholders ---
+cd "$TMP"
+rm -rf engagement-lite
+bash "$SCRIPT" lite engagement-lite >/dev/null
+jq -e '.enabledPlugins == {}' engagement-lite/.claude/settings.json >/dev/null || \
+    fail "a no-plugin type must scaffold an empty enabledPlugins placeholder"
+# The base marketplace is declared regardless: that is what makes it browsable
+# in /plugin and installable by name mid-engagement.
+jq -e '.extraKnownMarketplaces.trailofbits.source.repo == "trailofbits/skills"' \
+    engagement-lite/.claude/settings.json >/dev/null || \
+    fail "every engagement must declare the base marketplace, plugins or not"
+pass "no-plugin types keep the base marketplace and an empty allowlist"
+cd "$TMP"
 
 # --- Test 6b: .claude/hooks/ carries shared + Claude-only scripts, executable ---
 for h in log-command render-after-db engagement-doctor check-report-format; do
@@ -305,6 +394,11 @@ pass ".mcp.json scaffolded with the Burp MCP server (native SSE, URL substituted
 # --- Test 6e: settings.json auto-approves project MCP servers (yolo-safe) ---
 jq -e '.enableAllProjectMcpServers == true' engagement-internal/.claude/settings.json >/dev/null || \
     fail ".claude/settings.json must set enableAllProjectMcpServers=true"
+# Both prompts must be pre-accepted at PROJECT scope: the host's ~/.claude is no
+# longer copied into the container, so nothing else pre-accepts them and
+# ./yolo.sh would stop on the bypass-permissions dialog.
+jq -e '.skipDangerousModePermissionPrompt == true' engagement-internal/.claude/settings.json >/dev/null || \
+    fail ".claude/settings.json must set skipDangerousModePermissionPrompt=true"
 pass ".claude/settings.json enables project MCP servers (no trust prompt in yolo)"
 
 # --- Test 6f: BURP_MCP_URL env override flows into .mcp.json ---
@@ -370,32 +464,69 @@ echo "$render_out" | grep -q "SN2026_Example.md" || \
 if [ -e workspace/workspace.md ]; then fail "render.sh must not create/expect workspace.md"; fi
 pass "render.sh resolves <activity>.md by db:render marker even when root is /workspace"
 
-# --- Test 9: seed-codex-env.sh export copies the allowlist, gates the secret ---
-SEED="$(dirname "$SCRIPT")/seed-codex-env.sh"
+# --- Test 9: no host agent-config seeding survives anywhere in org/ ---
+# The host's ~/.claude / ~/.codex are no longer imported: the per-engagement
+# plugin/marketplace/MCP set is declared in the engagement, so nothing may copy
+# the operator's own agent config into the container.
+ORG_DIR="$(dirname "$SCRIPT")"
+test -e "$ORG_DIR/seed-claude-env.sh" && fail "org/seed-claude-env.sh must be gone"
+test -e "$ORG_DIR/seed-codex-env.sh"  && fail "org/seed-codex-env.sh must be gone"
+if grep -rn 'seed-claude-env\|seed-codex-env\|/seed/host-' "$ORG_DIR" >/dev/null 2>&1; then
+    fail "org/ still references the removed host-config seeders"
+fi
+pass "host agent-config seeding fully removed from org/"
+
+# --- Test 10: sync-agent-plugins.sh plans exactly what settings.json declares ---
+# It is the only thing that turns the declared allowlist into installed plugins
+# (declaring alone materialises the cache but never loads the plugin), so its
+# plan must match the settings file row for row. --dry-run touches no network.
+SYNC="$ORG_DIR/sync-agent-plugins.sh"
+test -x "$SYNC" || fail "org/sync-agent-plugins.sh must exist and be executable"
+
 cd "$TMP"
-rm -rf fake-codex seed-out seed-out-creds
-mkdir -p fake-codex/plugins fake-codex/skills fake-codex/rules fake-codex/prompts fake-codex/sessions
-printf 'approval_policy = "on-request"\n' > fake-codex/config.toml
-printf '# global\n'                        > fake-codex/AGENTS.md
-printf '{"token":"secret"}\n'              > fake-codex/auth.json
-printf 'dummy\n'                           > fake-codex/history.jsonl
-
-# export WITHOUT credentials: allowlist copied, auth.json skipped, denylist skipped
-CODEX_HOME="$TMP/fake-codex" bash "$SEED" export "$TMP/seed-out" >/dev/null || fail "seed export failed"
-for item in config.toml plugins skills rules prompts AGENTS.md; do
-    test -e "seed-out/$item" || fail "seed export should copy allowlist item: $item"
+rm -rf engagement-sync
+bash "$SCRIPT" web engagement-sync >/dev/null
+plan="$(bash "$SYNC" engagement-sync --dry-run)" || fail "sync --dry-run failed"
+echo "$plan" | grep -q 'would run: claude plugin marketplace add trailofbits/skills --scope project' || \
+    fail "plan must register each declared marketplace at project scope"
+for p in burpsuite-project-parser fp-check; do
+    echo "$plan" | grep -q "would run: claude plugin install $p@trailofbits --scope project -y" || \
+        fail "plan must install declared plugin $p at project scope"
 done
-test -e seed-out/auth.json     && fail "seed export must NOT copy auth.json without --with-credentials"
-test -e seed-out/history.jsonl && fail "seed export must NOT copy denylist item history.jsonl"
-test -e seed-out/sessions      && fail "seed export must NOT copy denylist dir sessions"
-pass "seed-codex-env.sh export copies allowlist, skips secret + state"
+echo "$plan" | grep -q "would run: codex plugin add burpsuite-project-parser@trailofbits" || \
+    fail "plan must apply the same list to Codex"
 
-# export WITH credentials: auth.json included, mode 600
-CODEX_HOME="$TMP/fake-codex" bash "$SEED" export "$TMP/seed-out-creds" --with-credentials >/dev/null || \
-    fail "seed export --with-credentials failed"
-test -e seed-out-creds/auth.json || fail "--with-credentials should copy auth.json"
-[ "$(stat -c '%a' seed-out-creds/auth.json)" = "600" ] || fail "auth.json should be chmod 600 in the seed"
-pass "seed-codex-env.sh --with-credentials includes auth.json (600)"
+# An entry set to false is declared-but-off and must not be installed.
+jq '.enabledPlugins["fp-check@trailofbits"] = false' \
+    engagement-sync/.claude/settings.json > "$TMP/s.json" && \
+    mv "$TMP/s.json" engagement-sync/.claude/settings.json
+bash "$SYNC" engagement-sync --dry-run | grep -q 'install fp-check@trailofbits' && \
+    fail "a plugin set to false must not be installed"
+
+# No allowlist at all: exit 0 with nothing to do (cloud/mobile/lite/none types).
+rm -rf engagement-sync-empty
+bash "$SCRIPT" lite engagement-sync-empty >/dev/null
+out="$(bash "$SYNC" engagement-sync-empty --dry-run)" || fail "empty allowlist should exit 0"
+echo "$out" | grep -q 'none enabled' || fail "empty allowlist should say nothing is enabled"
+echo "$out" | grep -q 'would run: claude plugin marketplace add trailofbits/skills' || \
+    fail "an empty allowlist must still register the base marketplace"
+echo "$out" | grep -q 'plugin install' && \
+    fail "an empty allowlist must not install anything"
+
+# Wrong directory: refuse instead of silently doing nothing.
+if bash "$SYNC" "$TMP/not-an-engagement" --dry-run 2>/dev/null; then
+    fail "sync must exit non-zero when there is no .claude/settings.json"
+fi
+pass "sync-agent-plugins.sh plans exactly the declared allowlist (and refuses a bad dir)"
+
+# --- Test 11: a typo in the newPT.sh plugin tables fails at scaffold time ---
+# marketplace_source() must know every marketplace referenced by a default list;
+# otherwise the mistake would only surface inside the container's postCreate.
+grep -q 'no marketplace source known' "$SCRIPT" || \
+    fail "newPT.sh must validate that every plugin's marketplace resolves to a source"
+grep -q 'unknown plugin group' "$SCRIPT" || \
+    fail "newPT.sh must reject a plugin group name that does not resolve"
+pass "newPT.sh validates its plugin tables before scaffolding"
 
 rm -f /tmp/np.err
 echo "All tests passed."

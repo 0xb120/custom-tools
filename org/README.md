@@ -1,6 +1,6 @@
 # Engagement tooling (`org/`)
 
-`org/` contains the host installer, portable Claude/Codex environment seeders, and the templates used to create a penetration-test workspace. The primary entry point is `newPT.sh`.
+`org/` contains the host installer and the templates used to create a penetration-test workspace. The primary entry point is `newPT.sh`.
 
 ## Create an engagement
 
@@ -27,13 +27,16 @@ Supported types select installer groups:
 | `internal` | Internal/network test | `base,PD,tomnomnom,recon,cracking,RT,utils,AI` |
 | `cloud` | Cloud assessment | `base,cloud,utils,AI` |
 | `mobile` | Mobile assessment | `base,reversing,utils,AI` |
+| `code` | White-box source review | `base,sast,utils,AI` |
 | `full` | Complete toolkit | every install group |
 | `lite` | Desk research, report work, or a small workspace | `base,utils,AI` |
 | `none` | Scaffold only | no tool installation |
 
+Each type also selects a set of agent plugins — see [Per-engagement plugins](#per-engagement-plugins).
+
 The optional base is `debian` (the default, `debian:trixie-slim`) or `kali` (`kalilinux/kali-rolling`).
 
-`newPT.sh` requires Bash and `sqlite3` on the host because it creates and initializes `db/engagement.db`. Docker and the Dev Container CLI are needed only when launching the generated container.
+`newPT.sh` requires Bash, `sqlite3` and `python3` on the host: it creates and initializes `db/engagement.db`, and writes the plugin allowlist into the generated `.claude/settings.json`. Docker and the Dev Container CLI are needed only when launching the generated container.
 
 ## Configure secrets and Burp
 
@@ -246,19 +249,71 @@ Supported groups are `base`, `PD`, `praetorian`, `tomnomnom`, `recon`, `takeover
 
 Run the installer through `sudo` from a regular account so user-scoped Go and pipx binaries land in the invoking user's home. `--insecure` disables TLS verification across download mechanisms and is only appropriate behind a trusted intercepting proxy.
 
-## Portable agent environments
+## Agent configuration inside the container
 
-The seeders copy portable configuration while excluding machine/session state and credentials by default:
+The container imports exactly two files from the host — the Claude and Codex credentials — and nothing else. `~/.claude` and `~/.codex` are not mounted, so the operator's plugins, marketplaces, skills and MCP servers never reach an engagement. Containers therefore start with **no plugins and no marketplaces**; Claude regenerates a clean `~/.claude.json` on first launch.
 
-```bash
-org/seed-claude-env.sh export ./claude-seed
-org/seed-claude-env.sh apply /mnt/seed/claude-seed
+| Mounted from the host | Container path | Copied to |
+| --- | --- | --- |
+| `~/.claude/.credentials.json` | `/seed/claude-credentials.json` | `~/.claude/.credentials.json` (600) |
+| `~/.codex/auth.json` | `/seed/codex-auth.json` | `~/.codex/auth.json` (600) |
 
-org/seed-codex-env.sh export ./codex-seed
-org/seed-codex-env.sh apply /mnt/seed/codex-seed
+Both are read-only binds and both must exist on the host, otherwise container creation fails; `up.sh` checks them first and says which login to run. To log in inside the container instead, delete the corresponding mount line from `.devcontainer/devcontainer.json`.
+
+MCP servers are declared per engagement: `.mcp.json` for Claude (project scope, auto-approved by `enableAllProjectMcpServers`) and a `codex mcp add` in `postCreateCommand` for Codex, which ignores project-scoped `mcp_servers`.
+
+## Per-engagement plugins
+
+The engagement's plugin set lives in its own `.claude/settings.json`. That file is the single source of truth: it is what Claude Code reads, what `claude plugin install --scope project` writes, and what the sync step below applies — so hand-editing and the CLI converge on the same place.
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "trailofbits": { "source": { "source": "github", "repo": "trailofbits/skills" } }
+  },
+  "enabledPlugins": {
+    "burpsuite-project-parser@trailofbits": true,
+    "static-analysis@trailofbits": true
+  }
+}
 ```
 
-Pass `--with-credentials` only when the seed remains on trusted local storage. Use `--home <path>` with `apply` to provision another user's home.
+`trailofbits` is declared in **every** engagement, whether or not it enables a plugin from it: that is what makes it browsable in `/plugin` and installable by name mid-engagement without adding the marketplace first. The official marketplace needs no entry — Claude Code registers that one itself.
+
+Plugins are grouped, the same way tools are grouped in `install-offsec-tools.sh`, and each engagement type maps to a list of groups (`plugin_group()` and the `PLUGIN_GROUPS` table at the top of `newPT.sh`). Groups are expanded to concrete ids at scaffold time, because `.claude/settings.json` is what Claude Code reads.
+
+| Group | Plugins | Always-on cost |
+| --- | --- | --- |
+| `burp` | `burpsuite-project-parser` | ~104 tok |
+| `triage` | `fp-check` | ~254 tok + a Stop/SubagentStop LLM gate |
+| `sast` | `static-analysis`, `semgrep-rule-creator`, `insecure-defaults`, `variant-analysis` | ~790 tok |
+| `codereview` | `audit-context-building`, `sharp-edges`, `differential-review` | ~515 tok |
+| `mobile` | `firebase-apk-scanner`, `c-review`, `dwarf-expert` | ~350 tok |
+| `supplychain` | `supply-chain-risk-auditor`, `agentic-actions-auditor` | ~260 tok |
+
+| Type | Plugin groups |
+| --- | --- |
+| `web` | `burp,triage` |
+| `external` | `burp,triage,supplychain` |
+| `internal` | `triage` |
+| `cloud` | `triage,supplychain` |
+| `mobile` | `mobile,triage` |
+| `code` | `sast,codereview,triage` |
+| `full` | every group |
+| `lite`, `none` | none (marketplace still declared) |
+
+Most of the trailofbits catalogue is source-code oriented, and a black-box engagement has no source: `sast` and `codereview` deliberately stay out of the black-box types. When the client hands over the source, add the group to the table for future engagements, or install into the running one with `claude plugin install <plugin>@<marketplace> --scope project`. Scaffolding refuses a group name that does not resolve, or a plugin whose marketplace is not in `marketplace_source()`.
+
+Declaring is not enough on its own: a declared-but-uninstalled plugin gets its cache materialised but never loads, so its skills do not reach the session. `sync-agent-plugins.sh` performs the install, idempotently, and verifies the result:
+
+```bash
+bash ~/custom-tools/org/sync-agent-plugins.sh /workspace --dry-run   # print the plan
+bash ~/custom-tools/org/sync-agent-plugins.sh /workspace             # apply it
+```
+
+`postCreateCommand` runs it at container creation; run it again by hand after editing the list, then restart the agent — plugins load at session start. It applies the same list to Codex (`codex plugin add`), whose plugins are container-global since Codex has no project scope. Marketplaces are cloned over HTTPS (`CLAUDE_CODE_PLUGIN_PREFER_HTTPS`), so a public one needs no credentials inside the container.
+
+Keep the lists short: every enabled plugin costs always-on context in every session of the engagement. Enablement is driven entirely by `enabledPlugins` — a plugin with no entry there is inactive, and one set to `false` is declared but off. Settings precedence is user < project < local < flag < policy.
 
 ## Validate changes
 
