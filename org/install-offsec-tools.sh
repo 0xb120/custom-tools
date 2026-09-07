@@ -33,7 +33,7 @@ fi
 
 # --- Configuration ---
 INSTALL_DIR=""
-GO_VERSION="1.26.5"
+GO_VERSION="1.27.1"
 
 # Resolve the real invoking user (the one before sudo). Used to scope GOBIN /
 # pipx installs to their $HOME instead of /root, so binaries land where the
