@@ -27,13 +27,16 @@ Supported types select installer groups:
 | `internal` | Internal/network test | `base,PD,tomnomnom,recon,cracking,RT,utils,AI` |
 | `cloud` | Cloud assessment | `base,cloud,utils,AI` |
 | `mobile` | Mobile assessment | `base,reversing,utils,AI` |
+| `code` | White-box source review | `base,sast,utils,AI` |
 | `full` | Complete toolkit | every install group |
 | `lite` | Desk research, report work, or a small workspace | `base,utils,AI` |
 | `none` | Scaffold only | no tool installation |
 
+Each type also selects a set of agent plugins — see [Per-engagement plugins](#per-engagement-plugins).
+
 The optional base is `debian` (the default, `debian:trixie-slim`) or `kali` (`kalilinux/kali-rolling`).
 
-`newPT.sh` requires Bash and `sqlite3` on the host because it creates and initializes `db/engagement.db`. Docker and the Dev Container CLI are needed only when launching the generated container.
+`newPT.sh` requires Bash, `sqlite3` and `python3` on the host: it creates and initializes `db/engagement.db`, and writes the plugin allowlist into the generated `.claude/settings.json`. Docker and the Dev Container CLI are needed only when launching the generated container.
 
 ## Configure secrets and Burp
 
@@ -275,7 +278,31 @@ The engagement's plugin set lives in its own `.claude/settings.json`. That file 
 }
 ```
 
-`newPT.sh` seeds the list from the engagement type — `web`/`external` get `burpsuite-project-parser` and `static-analysis`, `internal` the former, `full` those plus `audit-context-building`, and `cloud`/`mobile`/`lite`/`none` start empty. Both defaults tables live at the top of `newPT.sh`; every marketplace a plugin refers to must resolve in `marketplace_source()` or scaffolding refuses.
+`trailofbits` is declared in **every** engagement, whether or not it enables a plugin from it: that is what makes it browsable in `/plugin` and installable by name mid-engagement without adding the marketplace first. The official marketplace needs no entry — Claude Code registers that one itself.
+
+Plugins are grouped, the same way tools are grouped in `install-offsec-tools.sh`, and each engagement type maps to a list of groups (`plugin_group()` and the `PLUGIN_GROUPS` table at the top of `newPT.sh`). Groups are expanded to concrete ids at scaffold time, because `.claude/settings.json` is what Claude Code reads.
+
+| Group | Plugins | Always-on cost |
+| --- | --- | --- |
+| `burp` | `burpsuite-project-parser` | ~104 tok |
+| `triage` | `fp-check` | ~254 tok + a Stop/SubagentStop LLM gate |
+| `sast` | `static-analysis`, `semgrep-rule-creator`, `insecure-defaults`, `variant-analysis` | ~790 tok |
+| `codereview` | `audit-context-building`, `sharp-edges`, `differential-review` | ~515 tok |
+| `mobile` | `firebase-apk-scanner`, `c-review`, `dwarf-expert` | ~350 tok |
+| `supplychain` | `supply-chain-risk-auditor`, `agentic-actions-auditor` | ~260 tok |
+
+| Type | Plugin groups |
+| --- | --- |
+| `web` | `burp,triage` |
+| `external` | `burp,triage,supplychain` |
+| `internal` | `triage` |
+| `cloud` | `triage,supplychain` |
+| `mobile` | `mobile,triage` |
+| `code` | `sast,codereview,triage` |
+| `full` | every group |
+| `lite`, `none` | none (marketplace still declared) |
+
+Most of the trailofbits catalogue is source-code oriented, and a black-box engagement has no source: `sast` and `codereview` deliberately stay out of the black-box types. When the client hands over the source, add the group to the table for future engagements, or install into the running one with `claude plugin install <plugin>@<marketplace> --scope project`. Scaffolding refuses a group name that does not resolve, or a plugin whose marketplace is not in `marketplace_source()`.
 
 Declaring is not enough on its own: a declared-but-uninstalled plugin gets its cache materialised but never loads, so its skills do not reach the session. `sync-agent-plugins.sh` performs the install, idempotently, and verifies the result:
 

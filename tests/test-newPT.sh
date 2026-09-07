@@ -48,6 +48,7 @@ declare -A EXPECTED=(
     [internal]="base,PD,tomnomnom,recon,cracking,RT,utils,AI"
     [cloud]="base,cloud,utils,AI"
     [mobile]="base,reversing,utils,AI"
+    [code]="base,sast,utils,AI"
     [full]="base,PD,praetorian,tomnomnom,recon,takeover,dictionary,sast,dast,cracking,RT,cloud,reversing,utils,AI"
     [lite]="base,utils,AI"
     [none]="none"
@@ -59,26 +60,53 @@ for t in "${!EXPECTED[@]}"; do
 done
 pass "every <type> maps to the documented INSTALL_GROUPS"
 
-# --- Test 4b: each <type> resolves to its plugin allowlist (--print-plugins) ---
-# Containers inherit no plugins from the host, so this table is the only thing
-# that decides what an engagement starts with. Keep the lists deliberately short.
+# --- Test 4b: each <type> resolves to its plugin groups and their expansion ---
+# Containers inherit no plugins from the host, so these tables are the only thing
+# that decides what an engagement starts with. Groups per type, and the concrete ids they expand to. Both are asserted: the
+# group list is the thing an operator edits, the expansion is what reaches
+# .claude/settings.json.
+declare -A EXPECTED_PLUGIN_GROUPS=(
+    [web]="burp,triage"
+    [external]="burp,triage,supplychain"
+    [internal]="triage"
+    [cloud]="triage,supplychain"
+    [mobile]="mobile,triage"
+    [code]="sast,codereview,triage"
+    [full]="burp,triage,sast,codereview,mobile,supplychain"
+    [lite]=""
+    [none]=""
+)
+BURP="burpsuite-project-parser@trailofbits"
+TRIAGE="fp-check@trailofbits"
+SAST="static-analysis@trailofbits semgrep-rule-creator@trailofbits insecure-defaults@trailofbits variant-analysis@trailofbits"
+CODEREVIEW="audit-context-building@trailofbits sharp-edges@trailofbits differential-review@trailofbits"
+MOBILE="firebase-apk-scanner@trailofbits c-review@trailofbits dwarf-expert@trailofbits"
+SUPPLYCHAIN="supply-chain-risk-auditor@trailofbits agentic-actions-auditor@trailofbits"
 declare -A EXPECTED_PLUGINS=(
-    [web]="burpsuite-project-parser@trailofbits static-analysis@trailofbits"
-    [external]="burpsuite-project-parser@trailofbits static-analysis@trailofbits"
-    [internal]="burpsuite-project-parser@trailofbits"
-    [full]="burpsuite-project-parser@trailofbits static-analysis@trailofbits audit-context-building@trailofbits"
-    [cloud]=""
-    [mobile]=""
+    [web]="$BURP $TRIAGE"
+    [external]="$BURP $TRIAGE $SUPPLYCHAIN"
+    [internal]="$TRIAGE"
+    [cloud]="$TRIAGE $SUPPLYCHAIN"
+    [mobile]="$MOBILE $TRIAGE"
+    [code]="$SAST $CODEREVIEW $TRIAGE"
+    [full]="$BURP $TRIAGE $SAST $CODEREVIEW $MOBILE $SUPPLYCHAIN"
     [lite]=""
     [none]=""
 )
 for t in "${!EXPECTED_PLUGINS[@]}"; do
+    got="$(bash "$SCRIPT" --print-plugin-groups "$t")" \
+        || fail "--print-plugin-groups $t failed"
+    [ "$got" = "${EXPECTED_PLUGIN_GROUPS[$t]}" ] || \
+        fail "type=$t expected groups '${EXPECTED_PLUGIN_GROUPS[$t]}' got '$got'"
     got="$(bash "$SCRIPT" --print-plugins "$t")" \
         || fail "--print-plugins $t failed"
     [ "$got" = "${EXPECTED_PLUGINS[$t]}" ] || \
         fail "type=$t expected plugins '${EXPECTED_PLUGINS[$t]}' got '$got'"
 done
-pass "every <type> maps to the documented plugin allowlist"
+# Groups compose without duplicating a plugin two of them share.
+[ "$(bash "$SCRIPT" --print-plugins full | tr ' ' '\n' | sort | uniq -d)" = "" ] || \
+    fail "overlapping groups must not repeat a plugin id"
+pass "every <type> maps to the documented plugin groups and their expansion"
 
 # --- Test 5: scaffolding 'internal' engagement drops .devcontainer/ with substituted INSTALL_GROUPS ---
 cd "$TMP"
@@ -288,7 +316,7 @@ jq -e . "$SET" >/dev/null || fail ".claude/settings.json must stay valid JSON af
 jq -e '.hooks.PreToolUse and .permissions.defaultMode == "bypassPermissions"' "$SET" >/dev/null || \
     fail ".claude/settings.json lost template content during plugin injection"
 # internal => one plugin, and the marketplace it comes from, resolved to a source
-jq -e '.enabledPlugins == {"burpsuite-project-parser@trailofbits": true}' "$SET" >/dev/null || \
+jq -e '.enabledPlugins == {"fp-check@trailofbits": true}' "$SET" >/dev/null || \
     fail ".claude/settings.json must carry the internal profile's plugin allowlist"
 jq -e '.extraKnownMarketplaces.trailofbits.source.repo == "trailofbits/skills"' "$SET" >/dev/null || \
     fail ".claude/settings.json must declare the marketplace each plugin comes from"
@@ -298,10 +326,14 @@ pass ".claude/settings.json scaffolded with the engagement's plugin allowlist"
 cd "$TMP"
 rm -rf engagement-lite
 bash "$SCRIPT" lite engagement-lite >/dev/null
-jq -e '.enabledPlugins == {} and .extraKnownMarketplaces == {}' \
+jq -e '.enabledPlugins == {}' engagement-lite/.claude/settings.json >/dev/null || \
+    fail "a no-plugin type must scaffold an empty enabledPlugins placeholder"
+# The base marketplace is declared regardless: that is what makes it browsable
+# in /plugin and installable by name mid-engagement.
+jq -e '.extraKnownMarketplaces.trailofbits.source.repo == "trailofbits/skills"' \
     engagement-lite/.claude/settings.json >/dev/null || \
-    fail "a no-plugin type must scaffold empty enabledPlugins/extraKnownMarketplaces"
-pass "no-plugin types scaffold visible empty allowlist placeholders"
+    fail "every engagement must declare the base marketplace, plugins or not"
+pass "no-plugin types keep the base marketplace and an empty allowlist"
 cd "$TMP"
 
 # --- Test 6b: .claude/hooks/ carries shared + Claude-only scripts, executable ---
@@ -457,7 +489,7 @@ bash "$SCRIPT" web engagement-sync >/dev/null
 plan="$(bash "$SYNC" engagement-sync --dry-run)" || fail "sync --dry-run failed"
 echo "$plan" | grep -q 'would run: claude plugin marketplace add trailofbits/skills --scope project' || \
     fail "plan must register each declared marketplace at project scope"
-for p in burpsuite-project-parser static-analysis; do
+for p in burpsuite-project-parser fp-check; do
     echo "$plan" | grep -q "would run: claude plugin install $p@trailofbits --scope project -y" || \
         fail "plan must install declared plugin $p at project scope"
 done
@@ -465,18 +497,21 @@ echo "$plan" | grep -q "would run: codex plugin add burpsuite-project-parser@tra
     fail "plan must apply the same list to Codex"
 
 # An entry set to false is declared-but-off and must not be installed.
-jq '.enabledPlugins["static-analysis@trailofbits"] = false' \
+jq '.enabledPlugins["fp-check@trailofbits"] = false' \
     engagement-sync/.claude/settings.json > "$TMP/s.json" && \
     mv "$TMP/s.json" engagement-sync/.claude/settings.json
-bash "$SYNC" engagement-sync --dry-run | grep -q 'install static-analysis@trailofbits' && \
+bash "$SYNC" engagement-sync --dry-run | grep -q 'install fp-check@trailofbits' && \
     fail "a plugin set to false must not be installed"
 
 # No allowlist at all: exit 0 with nothing to do (cloud/mobile/lite/none types).
 rm -rf engagement-sync-empty
 bash "$SCRIPT" lite engagement-sync-empty >/dev/null
 out="$(bash "$SYNC" engagement-sync-empty --dry-run)" || fail "empty allowlist should exit 0"
-echo "$out" | grep -q 'no plugins declared' || fail "empty allowlist should say so"
-echo "$out" | grep -q 'would run' && fail "empty allowlist must plan no commands"
+echo "$out" | grep -q 'none enabled' || fail "empty allowlist should say nothing is enabled"
+echo "$out" | grep -q 'would run: claude plugin marketplace add trailofbits/skills' || \
+    fail "an empty allowlist must still register the base marketplace"
+echo "$out" | grep -q 'plugin install' && \
+    fail "an empty allowlist must not install anything"
 
 # Wrong directory: refuse instead of silently doing nothing.
 if bash "$SYNC" "$TMP/not-an-engagement" --dry-run 2>/dev/null; then
@@ -489,6 +524,8 @@ pass "sync-agent-plugins.sh plans exactly the declared allowlist (and refuses a 
 # otherwise the mistake would only surface inside the container's postCreate.
 grep -q 'no marketplace source known' "$SCRIPT" || \
     fail "newPT.sh must validate that every plugin's marketplace resolves to a source"
+grep -q 'unknown plugin group' "$SCRIPT" || \
+    fail "newPT.sh must reject a plugin group name that does not resolve"
 pass "newPT.sh validates its plugin tables before scaffolding"
 
 rm -f /tmp/np.err

@@ -3,9 +3,13 @@
 usage() {
     cat >&2 <<EOF
 Usage: $0 <type> <activity_name> [<base>]
-  <type>: web | external | internal | cloud | mobile | full | lite | none
+  <type>: web | external | internal | cloud | mobile | code | full | lite | none
   <base>: debian (default) | kali
 
+  code — white-box source review: SAST toolchain (semgrep + rules, gitleaks,
+         jsluice, detect-secrets) and the source-oriented agent plugins, without
+         the network recon/scanner stack. For secure code reviews, and for a
+         black-box engagement that later receives the source.
   lite — minimal engagement profile: only base (Claude Code + core utilities),
          utils (Go CLI helpers), and AI (Codex, sgpt, Strix). Useful when you
          don't need the recon/scanner toolchain (e.g. desk research, report
@@ -22,6 +26,7 @@ Usage: $0 <type> <activity_name> [<base>]
 Examples:
   $0 web      client-acme
   $0 internal acme-internal-2026q2
+  $0 code     client-acme-srcreview
   $0 lite     client-deskreview
   $0 web      client-acme         kali
   $0 none     client-docs-only
@@ -34,7 +39,7 @@ EOF
 # scaffolding. Not advertised in the usage banner.
 PRINT_MODE=""
 case "${1:-}" in
-    --print-groups|--print-plugins)
+    --print-groups|--print-plugins|--print-plugin-groups)
         [ "$#" -eq 2 ] || { echo "Usage: $0 $1 <type>" >&2; exit 1; }
         PRINT_MODE="$1"
         type="$2"
@@ -72,6 +77,7 @@ case "$type" in
     internal) INSTALL_GROUPS="base,PD,tomnomnom,recon,cracking,RT,utils,AI" ;;
     cloud)    INSTALL_GROUPS="base,cloud,utils,AI" ;;
     mobile)   INSTALL_GROUPS="base,reversing,utils,AI" ;;
+    code)     INSTALL_GROUPS="base,sast,utils,AI" ;;
     full)     INSTALL_GROUPS="base,PD,praetorian,tomnomnom,recon,takeover,dictionary,sast,dast,cracking,RT,cloud,reversing,utils,AI" ;;
     lite)     INSTALL_GROUPS="base,utils,AI" ;;
     none)     INSTALL_GROUPS="none" ;;   # install-offsec-tools.sh sentinel — exits 0 without touching the system
@@ -81,24 +87,10 @@ case "$type" in
         ;;
 esac
 
-# Agent plugins for this engagement type. The container inherits NOTHING from the
-# operator's workstation (only credentials are mounted), so each engagement
-# declares its own allowlist. It lands in .claude/settings.json, which is both
-# the record and the input to org/sync-agent-plugins.sh — the postCreate step
-# that actually installs them, and which you re-run by hand after editing.
-# Keep these lists short: every enabled plugin costs always-on context in every
-# session of the engagement. Add per engagement, don't grow the defaults.
-case "$type" in
-    web|external) ENGAGEMENT_PLUGINS="burpsuite-project-parser@trailofbits static-analysis@trailofbits" ;;
-    internal)     ENGAGEMENT_PLUGINS="burpsuite-project-parser@trailofbits" ;;
-    full)         ENGAGEMENT_PLUGINS="burpsuite-project-parser@trailofbits static-analysis@trailofbits audit-context-building@trailofbits" ;;
-    *)            ENGAGEMENT_PLUGINS="" ;;   # cloud, mobile, lite, none — add by hand if needed
-esac
-
 # Marketplace id -> the source string `plugin marketplace add` accepts (GitHub
-# owner/repo here; a URL or a local path work too). Every marketplace referenced
-# by ENGAGEMENT_PLUGINS must resolve here, otherwise the sync step cannot find
-# the plugin. Add a row when you start using a new marketplace.
+# owner/repo here; a URL or a local path work too). Every marketplace named
+# below — base or referenced by a plugin — must resolve here, otherwise the sync
+# step cannot find the plugin. Add a row when you start using a new marketplace.
 marketplace_source() {
     case "$1" in
         trailofbits)             echo "trailofbits/skills" ;;
@@ -107,11 +99,70 @@ marketplace_source() {
     esac
 }
 
+# Marketplaces every engagement declares, whether or not it enables a plugin
+# from them. Declaring one is what makes it browsable in `/plugin` and
+# installable by name mid-engagement (`claude plugin install <x>@trailofbits`)
+# without adding the marketplace first. The official marketplace is not listed:
+# Claude Code registers that one itself on first launch.
+BASE_MARKETPLACES="trailofbits"
+
+# Plugin groups — the plugin analogue of INSTALL_GROUPS. A group is a named
+# bundle; a type maps to a comma-separated list of groups, expanded to concrete
+# ids here at scaffold time because .claude/settings.json has to carry the ids
+# (that file is what Claude Code actually reads).
+#
+# Most of the trailofbits catalogue is source-code oriented, and a black-box
+# engagement has no source: 'sast' and 'codereview' deliberately stay out of the
+# black-box types, so you don't pay always-on context for skills you cannot use.
+# When the client hands over the source, adding a group is a one-word edit here
+# — or install the plugin directly into the running engagement with
+# `claude plugin install <plugin>@<marketplace> --scope project`.
+plugin_group() {
+    case "$1" in
+        burp)        echo "burpsuite-project-parser@trailofbits" ;;
+        triage)      echo "fp-check@trailofbits" ;;
+        sast)        echo "static-analysis@trailofbits semgrep-rule-creator@trailofbits insecure-defaults@trailofbits variant-analysis@trailofbits" ;;
+        codereview)  echo "audit-context-building@trailofbits sharp-edges@trailofbits differential-review@trailofbits" ;;
+        mobile)      echo "firebase-apk-scanner@trailofbits c-review@trailofbits dwarf-expert@trailofbits" ;;
+        supplychain) echo "supply-chain-risk-auditor@trailofbits agentic-actions-auditor@trailofbits" ;;
+        *) return 1 ;;
+    esac
+}
+PLUGIN_GROUP_NAMES="burp triage sast codereview mobile supplychain"
+
+case "$type" in
+    web)      PLUGIN_GROUPS="burp,triage" ;;
+    external) PLUGIN_GROUPS="burp,triage,supplychain" ;;
+    internal) PLUGIN_GROUPS="triage" ;;
+    cloud)    PLUGIN_GROUPS="triage,supplychain" ;;
+    mobile)   PLUGIN_GROUPS="mobile,triage" ;;
+    code)     PLUGIN_GROUPS="sast,codereview,triage" ;;
+    full)     PLUGIN_GROUPS="burp,triage,sast,codereview,mobile,supplychain" ;;
+    *)        PLUGIN_GROUPS="" ;;   # lite, none — nothing enabled, marketplace still available
+esac
+
+# Expand groups -> concrete plugin ids, order-preserving and deduplicated.
+ENGAGEMENT_PLUGINS=""
+for group in $(echo "$PLUGIN_GROUPS" | tr ',' ' '); do
+    group_ids="$(plugin_group "$group")" || {
+        echo "ERROR: unknown plugin group '$group'" >&2
+        echo "       valid groups: $PLUGIN_GROUP_NAMES" >&2
+        exit 1
+    }
+    for plugin_id in $group_ids; do
+        case " $ENGAGEMENT_PLUGINS " in
+            *" $plugin_id "*) continue ;;   # already pulled in by an earlier group
+        esac
+        ENGAGEMENT_PLUGINS="${ENGAGEMENT_PLUGINS:+$ENGAGEMENT_PLUGINS }$plugin_id"
+    done
+done
+
 # --print-* short-circuit: print the resolved value and exit before any I/O.
 if [ -n "$PRINT_MODE" ]; then
     case "$PRINT_MODE" in
-        --print-groups)  echo "$INSTALL_GROUPS" ;;
-        --print-plugins) echo "$ENGAGEMENT_PLUGINS" ;;
+        --print-groups)        echo "$INSTALL_GROUPS" ;;
+        --print-plugins)       echo "$ENGAGEMENT_PLUGINS" ;;
+        --print-plugin-groups) echo "$PLUGIN_GROUPS" ;;
     esac
     exit 0
 fi
@@ -124,6 +175,13 @@ for plugin_id in $ENGAGEMENT_PLUGINS; do
     esac
     marketplace_source "${plugin_id##*@}" >/dev/null || {
         echo "ERROR: no marketplace source known for '${plugin_id##*@}'" >&2
+        echo "       add it to marketplace_source() in $0" >&2
+        exit 1
+    }
+done
+for marketplace in $BASE_MARKETPLACES; do
+    marketplace_source "$marketplace" >/dev/null || {
+        echo "ERROR: no marketplace source known for base marketplace '$marketplace'" >&2
         echo "       add it to marketplace_source() in $0" >&2
         exit 1
     }
@@ -243,13 +301,16 @@ cp "$template_dir/claude/settings.json" "$activity_name/.claude/settings.json"
 # Write the engagement's plugin allowlist into the settings copy. The template
 # ships both keys as {} so the placeholders are visible even when a type has no
 # default plugins — that is where you add them by hand later.
+#
+# Marketplaces = the always-declared base set, then any additional one a plugin
+# comes from. The base set stays even for a type with no plugins, so /plugin can
+# browse it and `plugin install` resolves names mid-engagement.
 engagement_marketplaces=""
-for plugin_id in $ENGAGEMENT_PLUGINS; do
-    mkt="${plugin_id##*@}"
+for marketplace in $BASE_MARKETPLACES $(for p in $ENGAGEMENT_PLUGINS; do echo "${p##*@}"; done); do
     case " $engagement_marketplaces " in
-        *" $mkt="*) continue ;;   # already resolved
+        *" $marketplace="*) continue ;;   # already resolved
     esac
-    engagement_marketplaces="$engagement_marketplaces $mkt=$(marketplace_source "$mkt")"
+    engagement_marketplaces="$engagement_marketplaces $marketplace=$(marketplace_source "$marketplace")"
 done
 if ! ENGAGEMENT_PLUGINS="$ENGAGEMENT_PLUGINS" \
      ENGAGEMENT_MARKETPLACES="$engagement_marketplaces" \
@@ -335,7 +396,8 @@ Structure for '$activity_name' created successfully.
   ref:         $CUSTOM_TOOLS_REF
   claude:      $CLAUDE_CHANNEL (refresh key $SCAFFOLD_DATE; auto-update ON — set
                DISABLE_AUTOUPDATER=1 in .devcontainer/.env to freeze the version)
-  plugins:     ${ENGAGEMENT_PLUGINS:-(none)}
+  plugin grp:  ${PLUGIN_GROUPS:-(none)}
+  plugins:     ${ENGAGEMENT_PLUGINS:-(none — marketplaces still declared: $BASE_MARKETPLACES)}
   Dockerfile:  $activity_name/.devcontainer/Dockerfile
 
 Next steps:

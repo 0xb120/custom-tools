@@ -103,15 +103,22 @@ PLUGINS="$(jq -r '
     | select(.value != false and .value != null) | .key
 ' "$SETTINGS")"
 
-if [ -z "$PLUGINS" ]; then
-    echo "[=] no plugins declared in $SETTINGS — nothing to install."
-    echo "    Add them under \"enabledPlugins\" (plus their \"extraKnownMarketplaces\")."
+if [ -z "$PLUGINS" ] && [ -z "$MARKETPLACES" ]; then
+    echo "[=] $SETTINGS declares no marketplaces and no plugins — nothing to do."
+    echo "    Add them under \"extraKnownMarketplaces\" / \"enabledPlugins\"."
     exit 0
 fi
 
+# A declared marketplace with no enabled plugin is not a no-op: registering it is
+# what lets `/plugin` browse it and `plugin install <x>@<name>` resolve the name
+# mid-engagement. Engagement types with no default plugins still get one.
 echo "[+] engagement: $DIR"
 echo "    marketplaces: $(echo "$MARKETPLACES" | cut -f1 | xargs)"
-echo "    plugins:      $(echo "$PLUGINS" | xargs)"
+if [ -n "$PLUGINS" ]; then
+    echo "    plugins:      $(echo "$PLUGINS" | xargs)"
+else
+    echo "    plugins:      (none enabled — registering the marketplaces only)"
+fi
 [ "$DRY_RUN" -eq 1 ] && echo "    (dry run — no commands will be executed)"
 
 # Run from the engagement root: --scope project resolves the settings file from
@@ -193,6 +200,11 @@ fi
 
 # --- Verify -----------------------------------------------------------------
 if [ "$DRY_RUN" -eq 1 ] || [ "$DO_CLAUDE" -eq 0 ]; then
+    exit 0
+fi
+if [ -z "$PLUGINS" ]; then
+    echo "[+] marketplaces registered; no plugin enabled yet. Install one with:"
+    echo "      claude plugin install <plugin>@<marketplace> --scope project"
     exit 0
 fi
 
