@@ -1,6 +1,6 @@
 # Engagement tooling (`org/`)
 
-`org/` contains the host installer, portable Claude/Codex environment seeders, and the templates used to create a penetration-test workspace. The primary entry point is `newPT.sh`.
+`org/` contains the host installer and the templates used to create a penetration-test workspace. The primary entry point is `newPT.sh`.
 
 ## Create an engagement
 
@@ -246,19 +246,28 @@ Supported groups are `base`, `PD`, `praetorian`, `tomnomnom`, `recon`, `takeover
 
 Run the installer through `sudo` from a regular account so user-scoped Go and pipx binaries land in the invoking user's home. `--insecure` disables TLS verification across download mechanisms and is only appropriate behind a trusted intercepting proxy.
 
-## Portable agent environments
+## Agent configuration inside the container
 
-The seeders copy portable configuration while excluding machine/session state and credentials by default:
+The container imports exactly two files from the host — the Claude and Codex credentials — and nothing else. `~/.claude` and `~/.codex` are not mounted, so the operator's plugins, marketplaces, skills and MCP servers never reach an engagement. Containers therefore start with **no plugins and no marketplaces**; Claude regenerates a clean `~/.claude.json` on first launch.
+
+| Mounted from the host | Container path | Copied to |
+| --- | --- | --- |
+| `~/.claude/.credentials.json` | `/seed/claude-credentials.json` | `~/.claude/.credentials.json` (600) |
+| `~/.codex/auth.json` | `/seed/codex-auth.json` | `~/.codex/auth.json` (600) |
+
+Both are read-only binds and both must exist on the host, otherwise container creation fails; `up.sh` checks them first and says which login to run. To log in inside the container instead, delete the corresponding mount line from `.devcontainer/devcontainer.json`.
+
+MCP servers are declared per engagement: `.mcp.json` for Claude (project scope, auto-approved by `enableAllProjectMcpServers`) and a `codex mcp add` in `postCreateCommand` for Codex, which ignores project-scoped `mcp_servers`.
+
+Plugins are added per engagement, from inside the container, at project scope — so the choice is recorded in the engagement's own `.claude/settings.json`:
 
 ```bash
-org/seed-claude-env.sh export ./claude-seed
-org/seed-claude-env.sh apply /mnt/seed/claude-seed
-
-org/seed-codex-env.sh export ./codex-seed
-org/seed-codex-env.sh apply /mnt/seed/codex-seed
+claude plugin marketplace add <owner>/<repo> --scope project
+claude plugin install <plugin>@<marketplace> --scope project -y
+claude plugin list --json          # id, version, enabled
 ```
 
-Pass `--with-credentials` only when the seed remains on trusted local storage. Use `--home <path>` with `apply` to provision another user's home.
+Enablement is driven entirely by `enabledPlugins`; a plugin with no entry there is inactive. Settings precedence is user < project < local < flag < policy.
 
 ## Validate changes
 

@@ -79,11 +79,29 @@ grep -q -- '--dangerously-bypass-approvals-and-sandbox' engagement-internal/yolo
 grep -q -- '--dangerously-bypass-hook-trust' engagement-internal/yolo-codex.sh || \
     fail "yolo-codex.sh must pass --dangerously-bypass-hook-trust"
 
-# devcontainer.json mounts host ~/.codex and seeds it on postCreate
-grep -q 'target=/seed/host-codex' engagement-internal/.devcontainer/devcontainer.json || \
-    fail "devcontainer.json must bind-mount host ~/.codex to /seed/host-codex"
-grep -q 'seed-codex-env.sh apply /seed/host-codex' engagement-internal/.devcontainer/devcontainer.json || \
-    fail "devcontainer.json postCreate must seed Codex config"
+# devcontainer.json mounts the two agent credential FILES and nothing else from
+# the host's agent config: plugins, marketplaces and MCP servers are declared per
+# engagement, never inherited from the operator's workstation.
+DCJ=engagement-internal/.devcontainer/devcontainer.json
+grep -q 'HOME}/.claude/.credentials.json,target=/seed/claude-credentials.json' "$DCJ" || \
+    fail "devcontainer.json must bind-mount the host Claude credentials file"
+grep -q 'HOME}/.codex/auth.json,target=/seed/codex-auth.json' "$DCJ" || \
+    fail "devcontainer.json must bind-mount the host Codex auth file"
+grep -qE 'HOME\}/\.(claude|codex),target=' "$DCJ" && \
+    fail "devcontainer.json must NOT bind-mount the whole host ~/.claude or ~/.codex"
+grep -q 'seed-claude-env\|seed-codex-env\|/seed/host-' "$DCJ" && \
+    fail "devcontainer.json must not reference the removed host-config seeders"
+grep -q 'install -m 600 /seed/claude-credentials.json' "$DCJ" || \
+    fail "devcontainer.json postCreate must install the Claude credentials"
+grep -q 'install -m 600 /seed/codex-auth.json' "$DCJ" || \
+    fail "devcontainer.json postCreate must install the Codex auth file"
+
+# up.sh must pre-check both credential files: they are --mount-style binds, so a
+# missing source aborts `devcontainer up` with a raw docker error otherwise.
+grep -q '.claude/.credentials.json' engagement-internal/.devcontainer/up.sh || \
+    fail "up.sh must pre-check the host Claude credentials file"
+grep -q '.codex/auth.json' engagement-internal/.devcontainer/up.sh || \
+    fail "up.sh must pre-check the host Codex auth file"
 
 # {{PLACEHOLDER}} markers should all be substituted
 grep -q "{{" engagement-internal/.devcontainer/devcontainer.json && \
@@ -305,6 +323,11 @@ pass ".mcp.json scaffolded with the Burp MCP server (native SSE, URL substituted
 # --- Test 6e: settings.json auto-approves project MCP servers (yolo-safe) ---
 jq -e '.enableAllProjectMcpServers == true' engagement-internal/.claude/settings.json >/dev/null || \
     fail ".claude/settings.json must set enableAllProjectMcpServers=true"
+# Both prompts must be pre-accepted at PROJECT scope: the host's ~/.claude is no
+# longer copied into the container, so nothing else pre-accepts them and
+# ./yolo.sh would stop on the bypass-permissions dialog.
+jq -e '.skipDangerousModePermissionPrompt == true' engagement-internal/.claude/settings.json >/dev/null || \
+    fail ".claude/settings.json must set skipDangerousModePermissionPrompt=true"
 pass ".claude/settings.json enables project MCP servers (no trust prompt in yolo)"
 
 # --- Test 6f: BURP_MCP_URL env override flows into .mcp.json ---
@@ -370,32 +393,17 @@ echo "$render_out" | grep -q "SN2026_Example.md" || \
 if [ -e workspace/workspace.md ]; then fail "render.sh must not create/expect workspace.md"; fi
 pass "render.sh resolves <activity>.md by db:render marker even when root is /workspace"
 
-# --- Test 9: seed-codex-env.sh export copies the allowlist, gates the secret ---
-SEED="$(dirname "$SCRIPT")/seed-codex-env.sh"
-cd "$TMP"
-rm -rf fake-codex seed-out seed-out-creds
-mkdir -p fake-codex/plugins fake-codex/skills fake-codex/rules fake-codex/prompts fake-codex/sessions
-printf 'approval_policy = "on-request"\n' > fake-codex/config.toml
-printf '# global\n'                        > fake-codex/AGENTS.md
-printf '{"token":"secret"}\n'              > fake-codex/auth.json
-printf 'dummy\n'                           > fake-codex/history.jsonl
-
-# export WITHOUT credentials: allowlist copied, auth.json skipped, denylist skipped
-CODEX_HOME="$TMP/fake-codex" bash "$SEED" export "$TMP/seed-out" >/dev/null || fail "seed export failed"
-for item in config.toml plugins skills rules prompts AGENTS.md; do
-    test -e "seed-out/$item" || fail "seed export should copy allowlist item: $item"
-done
-test -e seed-out/auth.json     && fail "seed export must NOT copy auth.json without --with-credentials"
-test -e seed-out/history.jsonl && fail "seed export must NOT copy denylist item history.jsonl"
-test -e seed-out/sessions      && fail "seed export must NOT copy denylist dir sessions"
-pass "seed-codex-env.sh export copies allowlist, skips secret + state"
-
-# export WITH credentials: auth.json included, mode 600
-CODEX_HOME="$TMP/fake-codex" bash "$SEED" export "$TMP/seed-out-creds" --with-credentials >/dev/null || \
-    fail "seed export --with-credentials failed"
-test -e seed-out-creds/auth.json || fail "--with-credentials should copy auth.json"
-[ "$(stat -c '%a' seed-out-creds/auth.json)" = "600" ] || fail "auth.json should be chmod 600 in the seed"
-pass "seed-codex-env.sh --with-credentials includes auth.json (600)"
+# --- Test 9: no host agent-config seeding survives anywhere in org/ ---
+# The host's ~/.claude / ~/.codex are no longer imported: the per-engagement
+# plugin/marketplace/MCP set is declared in the engagement, so nothing may copy
+# the operator's own agent config into the container.
+ORG_DIR="$(dirname "$SCRIPT")"
+test -e "$ORG_DIR/seed-claude-env.sh" && fail "org/seed-claude-env.sh must be gone"
+test -e "$ORG_DIR/seed-codex-env.sh"  && fail "org/seed-codex-env.sh must be gone"
+if grep -rn 'seed-claude-env\|seed-codex-env\|/seed/host-' "$ORG_DIR" >/dev/null 2>&1; then
+    fail "org/ still references the removed host-config seeders"
+fi
+pass "host agent-config seeding fully removed from org/"
 
 rm -f /tmp/np.err
 echo "All tests passed."

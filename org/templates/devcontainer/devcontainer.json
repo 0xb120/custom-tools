@@ -22,8 +22,18 @@
   "remoteUser": "pentester",
   "containerUser": "pentester",
   "mounts": [
-    "source=${localEnv:HOME}/.claude,target=/seed/host-claude,type=bind,readonly",
-    "source=${localEnv:HOME}/.codex,target=/seed/host-codex,type=bind,readonly",
+    // Agent CREDENTIALS ONLY. The host's ~/.claude and ~/.codex are deliberately
+    // not mounted: plugins, marketplaces, skills and MCP servers are declared per
+    // engagement (.claude/settings.json, .mcp.json, `codex mcp add` below), never
+    // inherited from whatever the operator happens to have enabled on their
+    // workstation. Inheriting them was actively harmful — an enabled host plugin
+    // could install a SessionStart PATH shim that breaks the `python3 db/ptctl.py`
+    // hooks, or drag in an MCP server pointing at a host-only binary.
+    // These are --mount-style binds, so docker aborts container creation when the
+    // source file is missing (it does not create a stray directory in its place);
+    // up.sh checks both paths first to turn that into a readable message.
+    "source=${localEnv:HOME}/.claude/.credentials.json,target=/seed/claude-credentials.json,type=bind,readonly",
+    "source=${localEnv:HOME}/.codex/auth.json,target=/seed/codex-auth.json,type=bind,readonly",
     "source=${localEnv:HOME}/.ssh,target=/home/pentester/.ssh,type=bind,readonly",
     // DNS follows the host. Bind-mount the host resolver config read-only so the
     // container resolves names exactly like the host — VPN up/down included —
@@ -42,5 +52,11 @@
     "--network=host",
     "--env-file", "${localWorkspaceFolder}/.devcontainer/.env"
   ],
-  "postCreateCommand": "bash /home/pentester/custom-tools/org/seed-claude-env.sh apply /seed/host-claude --with-credentials || echo '[!] Claude config seed failed — launch claude and log in manually'; bash /home/pentester/custom-tools/org/seed-codex-env.sh apply /seed/host-codex --with-credentials || echo '[!] Codex config seed failed — launch codex and log in manually'; codex mcp get burp >/dev/null 2>&1 || codex mcp add burp -- npx -y mcp-remote {{BURP_MCP_URL}} || echo '[!] codex mcp add burp failed — add manually: codex mcp add burp -- npx -y mcp-remote {{BURP_MCP_URL}}'; echo 'Engagement container ready. Run: claude  (or: codex)'"
+  // Copy the two mounted credential files into the agents' config dirs (they are
+  // written to at token refresh, so they cannot be used from the read-only mount)
+  // and register the engagement's Burp MCP server for Codex, which ignores
+  // project-scoped mcp_servers. Nothing else is imported from the host: Claude
+  // regenerates a clean ~/.claude.json and starts with no plugins or marketplaces.
+  // Every step is non-fatal — a failure costs a manual login, not the container.
+  "postCreateCommand": "install -d -m 700 /home/pentester/.claude /home/pentester/.codex; install -m 600 /seed/claude-credentials.json /home/pentester/.claude/.credentials.json || echo '[!] Claude credential copy failed — run claude and log in manually'; install -m 600 /seed/codex-auth.json /home/pentester/.codex/auth.json || echo '[!] Codex credential copy failed — run codex login'; codex mcp get burp >/dev/null 2>&1 || codex mcp add burp -- npx -y mcp-remote {{BURP_MCP_URL}} || echo '[!] codex mcp add burp failed — add manually: codex mcp add burp -- npx -y mcp-remote {{BURP_MCP_URL}}'; echo 'Engagement container ready. Run: claude  (or: codex)'"
 }
