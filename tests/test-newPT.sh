@@ -166,6 +166,16 @@ grep -q -- '--claude-only=' "$dockerfile" || \
     fail "Dockerfile refresh layer must call install-offsec-tools.sh --claude-only=<channel>"
 grep -q '\${CLAUDE_REFRESH}' "$dockerfile" || \
     fail "the refresh RUN must reference \${CLAUDE_REFRESH}, or BuildKit ignores the cache key"
+# The refresh layer must re-sync the clone before invoking it. CUSTOM_TOOLS_REF
+# is a moving ref, but the cached layer above pins whatever commit was HEAD when
+# it was first built — running that outdated script fails the build outright
+# (a pre-merge copy does not know --claude-only). Needs the ssh mount: private repo.
+grep -q 'git -C /home/pentester/custom-tools fetch' "$dockerfile" || \
+    fail "the refresh layer must re-sync the custom-tools clone (cached layer pins a stale commit)"
+grep -q 'reset --hard FETCH_HEAD' "$dockerfile" || \
+    fail "the refresh layer must reset the clone to the fetched ref"
+awk '/--claude-only=/{exit found?0:1} /--mount=type=ssh/{found=1}' "$dockerfile" || \
+    fail "the refresh layer needs --mount=type=ssh to fetch from the private repo"
 main_layer="$(grep -n 'install-offsec-tools.sh \\$' "$dockerfile" | head -1 | cut -d: -f1)"
 refresh_layer="$(grep -n -- '--claude-only=' "$dockerfile" | head -1 | cut -d: -f1)"
 [ -n "$main_layer" ] && [ -n "$refresh_layer" ] && [ "$main_layer" -lt "$refresh_layer" ] || \
@@ -190,6 +200,31 @@ echo "$output" | grep -q "claude:[[:space:]]*latest" || \
 echo "$output" | grep -q "DISABLE_AUTOUPDATER" || \
     fail "post-scaffold output should point at the auto-update off-switch"
 pass "auto-update on by default, off-switch surfaced at scaffold time"
+
+# --- Test 5g: up.sh --pull forces a freshly pulled base image ---
+# `FROM <tag>` resolves the LOCAL tag and docker never re-resolves it, so both
+# moving bases (debian:trixie-slim, kalilinux/kali-rolling) can silently stay
+# months old. `devcontainer up` has no --pull, so up.sh pulls the tag itself.
+upsh="engagement-internal/.devcontainer/up.sh"
+grep -q -- '--pull)' "$upsh" || fail "up.sh must accept a --pull flag"
+grep -q 'docker pull "\$base_image"' "$upsh" || \
+    fail "up.sh --pull must pull the base image before building"
+grep -q 'base_image="debian:trixie-slim"' "$upsh" || \
+    fail "up.sh: BASE_IMAGE not substituted at scaffold time"
+grep -q 'container_name="engagement-internal"' "$upsh" || \
+    fail "up.sh: ACTIVITY_NAME not substituted (needed for the existing-container guard)"
+grep -q 'docker container inspect' "$upsh" || \
+    fail "up.sh --pull must refuse when the container already exists (up would skip the build)"
+# Go-template braces would trip the no-{{PLACEHOLDER}} assertion in Test 6h,
+# so the digest comparison must not use `docker inspect -f`.
+grep -q 'docker images --no-trunc --quiet' "$upsh" || \
+    fail "up.sh should compare digests via 'docker images --no-trunc --quiet' (no {{ }} templates)"
+# Both YOLO launchers forward flags so `./yolo.sh --pull` works.
+grep -q 'up.sh "\$@"' engagement-internal/yolo.sh || \
+    fail "yolo.sh must forward its arguments to up.sh (./yolo.sh --pull)"
+grep -q 'up.sh "\$@"' engagement-internal/yolo-codex.sh || \
+    fail "yolo-codex.sh must forward its arguments to up.sh"
+pass "up.sh --pull rebuilds on a freshly pulled base; both launchers forward it"
 
 # --- Test 5f: CLAUDE_CHANNEL env override pins the release (reproducible engagements) ---
 cd "$TMP"
