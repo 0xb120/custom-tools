@@ -5,7 +5,15 @@
     "args": {
       "BASE_IMAGE": "{{BASE_IMAGE}}",
       "INSTALL_GROUPS": "{{INSTALL_GROUPS}}",
-      "CUSTOM_TOOLS_REF": "{{CUSTOM_TOOLS_REF}}"
+      "CUSTOM_TOOLS_REF": "{{CUSTOM_TOOLS_REF}}",
+      // Claude Code release channel (latest | stable | X.Y.Z) and the cache key
+      // for the thin refresh layer at the end of the Dockerfile. CLAUDE_REFRESH
+      // is the scaffold date: it invalidates that one small layer per new
+      // engagement so the image always ships the current release, while the
+      // expensive toolchain layer above it stays cached. Bump it by hand (or
+      // pass --build-arg CLAUDE_REFRESH=$(date -u +%F)) to force a re-pull.
+      "CLAUDE_CHANNEL": "{{CLAUDE_CHANNEL}}",
+      "CLAUDE_REFRESH": "{{SCAFFOLD_DATE}}"
     },
     "options": ["--ssh=default"]
   },

@@ -60,4 +60,30 @@ RUN --mount=type=ssh,uid=1000 \
 # entirely — `docker exec` inherits the image-level ENV, so set it here too.
 ENV PATH="/usr/local/go/bin:/home/pentester/go/bin:/home/pentester/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
+# Claude Code refresh — a deliberately THIN layer, placed after the heavy
+# toolchain layer above.
+#
+# install-offsec-tools.sh already installed the agent as part of the 'base'
+# group, but that layer is cached across engagements: an engagement scaffolded
+# months after the last one would otherwise inherit whatever release was current
+# when BuildKit created the cache entry. CLAUDE_REFRESH is the cache key —
+# newPT.sh stamps the scaffold date into it, so this ~10s layer re-runs for
+# every fresh scaffold while the ~30min layer above stays cached. It is also
+# what puts `claude` in --groups=none / no-'base' images, where nothing else
+# installs it.
+#
+# Runs as `pentester`, never root: the native installer puts the binary under
+# ~/.local (user-owned), and that ownership is exactly what lets Claude's
+# built-in autoupdater replace it in place at runtime. Auto-update is ON by
+# default; set DISABLE_AUTOUPDATER=1 in .devcontainer/.env to freeze the
+# version baked in here (e.g. an engagement that must stay reproducible).
+#
+# CLAUDE_CHANNEL: latest (default) | stable | X.Y.Z to pin.
+ARG CLAUDE_CHANNEL=latest
+ARG CLAUDE_REFRESH=scaffold
+RUN echo "claude refresh key: ${CLAUDE_REFRESH}" \
+ && sudo bash /home/pentester/custom-tools/org/install-offsec-tools.sh \
+        --claude-only="${CLAUDE_CHANNEL}" /opt \
+ && claude --version
+
 WORKDIR /workspace

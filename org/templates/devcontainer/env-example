@@ -4,6 +4,13 @@
 
 ANTHROPIC_API_KEY=
 
+# Claude Code keeps itself current: the container install is native and
+# user-owned (~/.local/share/claude/versions/), so the built-in autoupdater can
+# replace the binary in place — a container built weeks ago catches up on the
+# next launch. Uncomment to freeze it at the version baked into the image
+# instead (engagements that must stay byte-reproducible, or air-gapped runs):
+# DISABLE_AUTOUPDATER=1
+
 # Common optional keys — uncomment as needed:
 # OPENAI_API_KEY=
 # SHODAN_API_KEY=
