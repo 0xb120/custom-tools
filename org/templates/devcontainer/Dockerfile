@@ -78,10 +78,24 @@ ENV PATH="/usr/local/go/bin:/home/pentester/go/bin:/home/pentester/.local/bin:/u
 # default; set DISABLE_AUTOUPDATER=1 in .devcontainer/.env to freeze the
 # version baked in here (e.g. an engagement that must stay reproducible).
 #
+# The clone is re-synced first, and that step is NOT optional: CUSTOM_TOOLS_REF
+# is a moving ref ('main'), but the layer above bakes in whichever commit was
+# HEAD the first time this (BASE_IMAGE, INSTALL_GROUPS) combination was built.
+# Docker has no way to notice that 'main' advanced, so without the fetch this
+# layer would run an outdated copy of install-offsec-tools.sh — one that may not
+# even know the --claude-only flag, failing the build outright. Note the split:
+# the repo SCRIPTS are refreshed here, the installed BINARIES stay as the cached
+# layer left them. If a script starts needing a tool that was added to
+# install-offsec-tools.sh after that layer was cached, install it in the running
+# container (or rebuild with --no-cache).
+#
 # CLAUDE_CHANNEL: latest (default) | stable | X.Y.Z to pin.
 ARG CLAUDE_CHANNEL=latest
 ARG CLAUDE_REFRESH=scaffold
-RUN echo "claude refresh key: ${CLAUDE_REFRESH}" \
+RUN --mount=type=ssh,uid=1000 \
+    echo "claude refresh key: ${CLAUDE_REFRESH}" \
+ && git -C /home/pentester/custom-tools fetch --depth 1 origin "${CUSTOM_TOOLS_REF}" \
+ && git -C /home/pentester/custom-tools reset --hard FETCH_HEAD \
  && sudo bash /home/pentester/custom-tools/org/install-offsec-tools.sh \
         --claude-only="${CLAUDE_CHANNEL}" /opt \
  && claude --version

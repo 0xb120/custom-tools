@@ -14,6 +14,9 @@
 # This is just the two documented steps chained together:
 #   bash .devcontainer/up.sh
 #   devcontainer exec --workspace-folder . codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust
+#
+# Flags are forwarded to up.sh, so `./yolo-codex.sh --pull` builds against a
+# freshly pulled base image instead of the local copy (see up.sh --help).
 
 set -euo pipefail
 
@@ -22,7 +25,7 @@ cd "$(dirname "$(readlink -f "$0")")"
 
 # 1. Build + start (or reuse) the container. up.sh does the BuildKit and
 #    ssh-agent preflight checks and exits non-zero if they fail.
-bash .devcontainer/up.sh
+bash .devcontainer/up.sh "$@"
 
 # 2. Attach an interactive Codex session in YOLO mode.
 exec devcontainer exec --workspace-folder . codex \

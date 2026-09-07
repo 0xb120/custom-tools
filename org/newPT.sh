@@ -168,7 +168,8 @@ sed -i \
     -e "s|{{CLAUDE_CHANNEL}}|$CLAUDE_CHANNEL|g" \
     -e "s|{{SCAFFOLD_DATE}}|$SCAFFOLD_DATE|g" \
     "$activity_name/.devcontainer/Dockerfile" \
-    "$activity_name/.devcontainer/devcontainer.json"
+    "$activity_name/.devcontainer/devcontainer.json" \
+    "$activity_name/.devcontainer/up.sh"
 
 # Per-engagement secrets file (consumed by Docker via --env-file in devcontainer.json
 # runArgs). Source of truth is org/conf/devcontainer.env — gitignored, populated
@@ -263,6 +264,9 @@ Next steps:
   ./yolo-codex.sh                              # same, but launches Codex (--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust)
   # ...or do it by hand:
   bash .devcontainer/up.sh                     # builds + starts the container (BuildKit + ssh-agent checks)
+  bash .devcontainer/up.sh --pull              # ...same, but on a freshly pulled base image (both bases are
+                                               #    moving tags; docker otherwise reuses the local copy forever)
+                                               #    also works via ./yolo.sh --pull and ./yolo-codex.sh --pull
   devcontainer exec --workspace-folder . claude
   # Claude Code self-updates inside the container. To force a refresh without a rebuild:
   #   devcontainer exec --workspace-folder . sudo bash ~/custom-tools/org/install-offsec-tools.sh --claude-only /opt

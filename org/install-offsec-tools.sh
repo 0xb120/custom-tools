@@ -90,7 +90,7 @@ Options:
                      tomnomnom, recon, takeover, dictionary, sast, dast,
                      cracking, RT, cloud, reversing, utils, AI.
                      (The Go toolchain is now installed unconditionally by
-                     'base' — every downstream group that uses `go install`
+                     'base' — every downstream group that uses \`go install\`
                      depends on it, so it is no longer a selectable group.)
   --claude-only[=ch] Install/refresh ONLY Claude Code, skipping every group.
                      <ch> is the release channel: latest (default) | stable |
