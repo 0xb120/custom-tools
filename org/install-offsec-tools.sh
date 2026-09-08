@@ -610,6 +610,14 @@ install_sast() {
     echo "[+] Installing SAST Tools..."
     sudo apt install -y cloc ripgrep zstd
     as_user pipx install semgrep
+    # trailmark — parses source into a queryable graph (call paths, taint, blast
+    # radius, entry points). Installed here because the trailmark@trailofbits
+    # plugin will not install it: its skills probe for the CLI and, when it is
+    # missing, can only answer "trailmark is not installed" — while still costing
+    # their always-on context in every session. Needs python >= 3.12 (trixie and
+    # kali both ship 3.13). Landing it in the `sast` group is what makes it
+    # present in exactly the engagement types that enable the plugin.
+    as_user pipx install trailmark
     go_install -v github.com/BishopFox/jsluice/cmd/jsluice@latest
 
     # Secret-scanning fleet — ptflow's content_discovery runs these ∥ over the downloaded response
