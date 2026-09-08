@@ -170,4 +170,32 @@ echo "$exploitdb_block" | sed -n '/if clone_if_missing/,/^    else/p' | grep -q 
     || fail "the searchsploit symlink must only be created when the clone succeeded"
 pass "exploitdb is best-effort and symlinks only on success"
 
+# --- Test 14: install_RT ships the Rust toolchain aardwolf needs, before NetExec ---
+# NetExec hard-depends on aardwolf, which PyPI publishes as an sdist only and
+# which builds a PyO3 extension through setuptools-rust. There is no wheel to
+# fall back on, so a missing rustc is a deterministic build kill, not a flake:
+#   error: can't find Rust compiler
+#   ERROR: Failed building wheel for aardwolf
+rt_body="$(sed -n '/^install_RT()/,/^}/p' "$SCRIPT")"
+echo "$rt_body" | grep -q 'apt install -y rustc cargo' \
+    || fail "install_RT must install a Rust toolchain (aardwolf builds a PyO3 extension from sdist)"
+rust_line="$(echo "$rt_body" | grep -n 'rustc cargo'        | head -1 | cut -d: -f1)"
+nxc_line="$(echo  "$rt_body" | grep -n 'Pennyw0rth/NetExec' | head -1 | cut -d: -f1)"
+[ -n "$rust_line" ] && [ -n "$nxc_line" ] && [ "$rust_line" -lt "$nxc_line" ] \
+    || fail "rustc must be installed BEFORE NetExec (rust=$rust_line netexec=$nxc_line)"
+pass "install_RT installs rustc/cargo ahead of NetExec"
+
+# --- Test 15: install_RT supplies the readline headers evil-winrm's gem chain needs ---
+# evil-winrm pulls readline-ext, a native extension. ruby-dev provides the
+# ncurses headers its extconf probes for but not readline's, so the build stops
+# at "checking for readline/readline.h... no" and gem install exits 1 — another
+# deterministic build kill, not a flake.
+echo "$rt_body" | grep -q 'apt install -y libreadline-dev' \
+    || fail "install_RT must install libreadline-dev (readline-ext builds a native extension)"
+rl_line="$(echo "$rt_body" | grep -n 'libreadline-dev' | head -1 | cut -d: -f1)"
+ew_line="$(echo "$rt_body" | grep -n 'gem install --no-document evil-winrm' | head -1 | cut -d: -f1)"
+[ -n "$rl_line" ] && [ -n "$ew_line" ] && [ "$rl_line" -lt "$ew_line" ] \
+    || fail "libreadline-dev must be installed BEFORE evil-winrm (readline=$rl_line evil-winrm=$ew_line)"
+pass "install_RT installs libreadline-dev ahead of evil-winrm"
+
 echo "All tests passed."
