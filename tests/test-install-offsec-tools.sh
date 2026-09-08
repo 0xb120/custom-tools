@@ -104,4 +104,70 @@ grep -q 'CLAUDE_CHANNEL="\${CLAUDE_CHANNEL:-latest}"' "$SCRIPT" || \
 bash "$SCRIPT" --dry-run --claude-only /tmp >/dev/null || fail "default channel path broke"
 pass "Claude Code release channel defaults to latest and is overridable"
 
+# --- Test 11: as_user resolves user-local binaries invoked by bare name ---
+# sudo looks the command up in its OWN secure_path; the inline `PATH=...`
+# assignment only lands in the child's environment, too late for the lookup.
+# Without an `env` interposer every pipx binary under ~/.local/bin called by
+# bare name dies with "sudo: <tool>: command not found" — which is exactly how
+# `as_user search_vulns -u` failed mid-build while `as_user pipx ...` (pipx
+# lives in /usr/bin, inside secure_path) sailed through.
+as_user_body="$(sed -n '/^as_user() {/,/^}/p' "$SCRIPT")"
+echo "$as_user_body" | grep -qw env \
+    || fail "as_user must exec through 'env' so the PATH it sets is the one used to resolve the command"
+echo "$as_user_body" | grep -q 'PATH=' \
+    || fail "as_user must still put \$TARGET_HOME/.local/bin on PATH"
+pass "as_user resolves bare-name user-local binaries (env interposer present)"
+
+# --- Test 12: clone_if_missing retries transient git failures ---
+# Same rationale as go_install: one dropped connection or a resolver timeout
+# (glibc gives up after timeout:5 x attempts:2 -> "Could not resolve host")
+# must not discard a ten-minute toolchain build under `set -e`.
+clone_body="$(sed -n '/^clone_if_missing() {/,/^}/p' "$SCRIPT")"
+echo "$clone_body" | grep -qw retry \
+    || fail "clone_if_missing must wrap git clone in retry, like go_install does"
+
+# Behavioural check: drive the real helpers with a stubbed git that fails twice
+# before succeeding, and a stubbed sleep so the backoff costs no wall clock.
+harness="$(mktemp -d)"
+{
+    sed -n '/^retry() {/,/^}/p' "$SCRIPT"
+    echo "$clone_body"
+    cat <<'STUB'
+sleep() { :; }
+attempts=0
+git() {
+    attempts=$((attempts + 1))
+    [ "$attempts" -ge 3 ] || { echo "fatal: Could not resolve host: gitlab.com" >&2; return 128; }
+    mkdir -p "${@: -1}/.git"
+}
+clone_if_missing https://example.invalid/x.git "$1/dest" >/dev/null 2>&1 \
+    || { echo "clone_if_missing gave up despite a retry budget"; exit 1; }
+[ "$attempts" -eq 3 ] || { echo "expected 3 git attempts, got $attempts"; exit 1; }
+# Second call must short-circuit on the existing .git, not re-clone.
+before=$attempts
+clone_if_missing https://example.invalid/x.git "$1/dest" >/dev/null 2>&1
+[ "$attempts" -eq "$before" ] || { echo "clone_if_missing re-cloned an existing checkout"; exit 1; }
+STUB
+} > "$harness/harness.sh"
+out="$(bash "$harness/harness.sh" "$harness" 2>&1)" \
+    || fail "clone_if_missing retry behaviour: $out"
+rm -rf "$harness"
+pass "clone_if_missing retries transient clone failures and stays idempotent"
+
+# --- Test 13: the exploitdb clone is best-effort and never dangles a symlink ---
+# It is the largest clone in the script and the only one not on GitHub, so it is
+# the likeliest to be cut short — and a missing exploit DB is no reason to throw
+# away the whole toolchain. Its three neighbours in install_recon (wpprobe
+# update-db, search_vulns -u, the EyeWitness venv) are already best-effort.
+exploitdb_block="$(grep -A6 'exploit-database/exploitdb' "$SCRIPT")"
+echo "$exploitdb_block" | grep -q 'if clone_if_missing' \
+    || fail "the exploitdb clone must be best-effort (an abort here discards the whole install)"
+echo "$exploitdb_block" | grep -q 'ln -sf' \
+    || fail "expected the searchsploit symlink next to the exploitdb clone"
+# The symlink has to sit inside the success branch, or a failed clone leaves
+# /usr/local/bin/searchsploit pointing at nothing.
+echo "$exploitdb_block" | sed -n '/if clone_if_missing/,/^    else/p' | grep -q 'ln -sf' \
+    || fail "the searchsploit symlink must only be created when the clone succeeded"
+pass "exploitdb is best-effort and symlinks only on success"
+
 echo "All tests passed."
