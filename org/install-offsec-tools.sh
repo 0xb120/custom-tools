@@ -782,6 +782,15 @@ install_recon() {
 install_RT(){
     echo "[+] Installing Red Teaming Tools..."
     as_user pipx ensurepath
+
+    # NetExec hard-depends on aardwolf, which PyPI ships as an sdist ONLY — no
+    # wheel for any version or platform — and whose build backend is
+    # setuptools-rust: it compiles the librlers PyO3 extension. Unlike x8 in
+    # install_recon there is no prebuilt artefact to fall back on, so without a
+    # Rust toolchain pip dies with "can't find Rust compiler" and takes the whole
+    # image build with it. Debian's rustc builds it fine (1.85 in trixie), so apt
+    # is enough — no need to pull rustup into the image.
+    sudo apt install -y rustc cargo
     as_user pipx install git+https://github.com/Pennyw0rth/NetExec
     as_user pipx install impacket
 
@@ -816,7 +825,12 @@ install_RT(){
     # AD / Kerberos toolkit
     go_install -v github.com/ropnop/kerbrute@latest
     as_user pipx install certipy-ad
-    # evil-winrm — Ruby gem (ruby + ruby-dev already in install_base)
+    # evil-winrm — Ruby gem (ruby + ruby-dev already in install_base). Its
+    # dependency chain ends in readline-ext, a native extension whose extconf
+    # probes for readline/readline.h and editline/readline.h and finds neither:
+    # ruby-dev brings the ncurses headers but not readline's, so the gem build
+    # fails and takes the whole install with it. libreadline-dev supplies it.
+    sudo apt install -y libreadline-dev
     sudo gem install --no-document evil-winrm
 
     sudo apt install -y proxychains4 smbmap smbclient nfs-common sshuttle
