@@ -63,8 +63,14 @@ export GOTOOLCHAIN=local
 # insecure-mode env vars (PIP_TRUSTED_HOST, GIT_SSL_NO_VERIFY) forwarded
 # explicitly. Required because sudo strips HOME by default, which makes
 # pipx install everything under /root and orphan it from the user's PATH.
+# The `env` interposer is load-bearing too: sudo resolves the command name
+# against its own secure_path, so the PATH= below would reach the child too late
+# to be used for the lookup and any ~/.local/bin binary called by bare name dies
+# with "sudo: <tool>: command not found" (pipx lives in /usr/bin, which is why
+# only pipx-installed tools ever hit it). env moves the lookup after the
+# assignment, so a bare name resolves against the PATH we actually set.
 as_user() {
-    sudo -u "$TARGET_USER" -H \
+    sudo -u "$TARGET_USER" -H env \
         PIP_TRUSTED_HOST="${PIP_TRUSTED_HOST:-}" \
         GIT_SSL_NO_VERIFY="${GIT_SSL_NO_VERIFY:-}" \
         PATH="$TARGET_HOME/.local/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
@@ -244,8 +250,13 @@ go_install() {
     retry 3 10 go install "$@"
 }
 
+# clone_if_missing <url> <dest> [extra git args...] : idempotent clone, with the
+# same retry as go_install and for the same reason. One resolver timeout is
+# enough to lose a ten-minute install under `set -e`: glibc gives up after
+# timeout:5 x attempts:2 and git reports "Could not resolve host". A failed
+# clone leaves nothing behind (git removes the target it created), so every
+# attempt starts from a clean slate.
 clone_if_missing() {
-    # Usage: clone_if_missing <url> <dest> [extra git args...]
     local url="$1"
     local dest="$2"
     shift 2
@@ -253,7 +264,7 @@ clone_if_missing() {
         echo "[=] $dest already present, skipping clone"
         return 0
     fi
-    git clone "$@" "$url" "$dest"
+    retry 3 10 git clone "$@" "$url" "$dest"
 }
 
 detect_distro() {
@@ -744,8 +755,15 @@ install_recon() {
 
     # searchsploit (Exploit-DB CLI) — local exploit lookup, same workflow
     # phase as search_vulns and wpprobe (read-only DB grep, not active RT).
-    clone_if_missing https://gitlab.com/exploit-database/exploitdb.git "$INSTALL_DIR/exploitdb"
-    sudo ln -sf "$INSTALL_DIR/exploitdb/searchsploit" /usr/local/bin/searchsploit
+    # Best-effort, like both of those: this is the largest clone in the script
+    # and the only one not on GitHub, so it is the likeliest to be cut short —
+    # and a missing exploit DB is no reason to discard the whole toolchain.
+    # The symlink stays inside the success branch or it dangles.
+    if clone_if_missing https://gitlab.com/exploit-database/exploitdb.git "$INSTALL_DIR/exploitdb"; then
+        sudo ln -sf "$INSTALL_DIR/exploitdb/searchsploit" /usr/local/bin/searchsploit
+    else
+        echo "[!] exploitdb clone failed — searchsploit skipped (re-run the installer later)"
+    fi
 
     # EyeWitness (OPTIONAL — web screenshots + default-cred signatures for ptflow's screenshot step).
     # Not a PATH binary but a Selenium app: ptflow resolves it as <dir>/.venv/bin/python
