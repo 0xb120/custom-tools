@@ -269,40 +269,41 @@ The engagement's plugin set lives in its own `.claude/settings.json`. That file 
 ```json
 {
   "extraKnownMarketplaces": {
-    "trailofbits": { "source": { "source": "github", "repo": "trailofbits/skills" } }
+    "trailofbits":             { "source": { "source": "github", "repo": "trailofbits/skills" } },
+    "claude-plugins-official": { "source": { "source": "github", "repo": "anthropics/claude-plugins-official" } }
   },
   "enabledPlugins": {
-    "burpsuite-project-parser@trailofbits": true,
-    "static-analysis@trailofbits": true
+    "burpsuite-project-parser@trailofbits": true
   }
 }
 ```
 
-`trailofbits` is declared in **every** engagement, whether or not it enables a plugin from it: that is what makes it browsable in `/plugin` and installable by name mid-engagement without adding the marketplace first. The official marketplace needs no entry — Claude Code registers that one itself.
+Both `trailofbits` (`trailofbits/skills`) and `claude-plugins-official` (`anthropics/claude-plugins-official`) are declared in **every** engagement, whether or not it enables a plugin from them: that is what makes them browsable in `/plugin` and installable by name mid-engagement without adding the marketplace first. Claude Code registers the official one for itself anyway, but the row here is what pushes it into the container's *project* scope, which is the only thing `sync-agent-plugins.sh` reads.
 
-Plugins are grouped, the same way tools are grouped in `install-offsec-tools.sh`, and each engagement type maps to a list of groups (`plugin_group()` and the `PLUGIN_GROUPS` table at the top of `newPT.sh`). Groups are expanded to concrete ids at scaffold time, because `.claude/settings.json` is what Claude Code reads.
+Plugins are declared in two places, both at the top of `newPT.sh`. `BASE_PLUGINS` is the set every type gets — the reasoning and write-up side of the work, useful whatever the target is. `type_plugins()` then adds one row per `<type>`, 1:1 with `INSTALL_GROUPS` and with no group indirection. Ids are `<plugin>@<marketplace>`, and every marketplace named must resolve in `marketplace_source()`; scaffolding refuses one that does not, so the mistake surfaces on the workstation instead of inside the container's postCreate.
 
-| Group | Plugins | Always-on cost |
-| --- | --- | --- |
-| `burp` | `burpsuite-project-parser` | ~104 tok |
-| `triage` | `fp-check` | ~254 tok + a Stop/SubagentStop LLM gate |
-| `sast` | `static-analysis`, `semgrep-rule-creator`, `insecure-defaults`, `variant-analysis` | ~790 tok |
-| `codereview` | `audit-context-building`, `sharp-edges`, `differential-review` | ~515 tok |
-| `mobile` | `firebase-apk-scanner`, `c-review`, `dwarf-expert` | ~350 tok |
-| `supplychain` | `supply-chain-risk-auditor`, `agentic-actions-auditor` | ~260 tok |
-
-| Type | Plugin groups |
+| Declared in every type | Why |
 | --- | --- |
-| `web` | `burp,triage` |
-| `external` | `burp,triage,supplychain` |
-| `internal` | `triage` |
-| `cloud` | `triage,supplychain` |
-| `mobile` | `mobile,triage` |
-| `code` | `sast,codereview,triage` |
-| `full` | every group |
-| `lite`, `none` | none (marketplace still declared) |
+| `ask-questions-if-underspecified@trailofbits` | clarifies an underspecified ask before acting |
+| `sharp-edges@trailofbits` | error-prone APIs, footgun configurations |
+| `insecure-defaults@trailofbits` | hardcoded credentials, fallback secrets, weak defaults |
+| `playground@claude-plugins-official` | self-contained interactive HTML (PoC pages, explorers) |
+| `remember@claude-plugins-official` | session memory across engagement sessions |
+| `code-simplifier@claude-plugins-official` | tidies up throwaway PoC/exploit code |
+| `miro@claude-plugins-official` | boards: attack paths, network diagrams, report figures |
 
-Most of the trailofbits catalogue is source-code oriented, and a black-box engagement has no source: `sast` and `codereview` deliberately stay out of the black-box types. When the client hands over the source, add the group to the table for future engagements, or install into the running one with `claude plugin install <plugin>@<marketplace> --scope project`. Scaffolding refuses a group name that does not resolve, or a plugin whose marketplace is not in `marketplace_source()`.
+| Type | Adds on top of the base set |
+| --- | --- |
+| `web` | `burpsuite-project-parser`, `fp-check`, `playwright`, `code-review` |
+| `external` | `burpsuite-project-parser`, `fp-check`, `playwright`, `code-review` |
+| `internal` | `fp-check` |
+| `cloud` | `fp-check`, `supply-chain-risk-auditor` |
+| `mobile` | `fp-check`, `audit-context-building`, `variant-analysis`, `code-review`, `claude-security`, `firebase-apk-scanner`, `supply-chain-risk-auditor` |
+| `code` | `audit-context-building`, `variant-analysis`, `static-analysis`, `fp-check`, `code-review`, `claude-security`, `supply-chain-risk-auditor`, `trailmark` |
+| `full` | every one of the above |
+| `lite`, `none` | — (base set only) |
+
+Match a row to what the type can actually do: a plugin whose toolchain is not in that type's `INSTALL_GROUPS` is a skill with no binary underneath. `static-analysis` is the clearest case — `install_sast()` ships CodeQL and Semgrep, and `sast` is only in `web`, `code` and `full`. `firebase-apk-scanner` is the same rule seen from the other side: it shells out to `apktool`, which `install_reversing()` provides, so it belongs to the two types that install `reversing` (`mobile`, `full`) and nowhere else. `trailmark` is the case that made the coupling explicit — its skills probe for a `trailmark` CLI and, finding none, can only answer "trailmark is not installed" while still costing their context, so `install_sast()` now `pipx install`s it (Python 3.12+, from PyPI) and the plugin is declared only where `sast` is. Test 4c in `tests/test-newPT.sh` asserts that pairing for all three. Four entries carry a runtime caveat worth knowing rather than rediscovering. `playwright` starts an MCP server (`npx @playwright/mcp@latest`, so nodejs from the `base` group) whose tool definitions sit in context for the whole session. `remember` installs `SessionStart`/`UserPromptSubmit`/`PostToolUse` hooks that run alongside the engagement's own ptctl context hooks — both write session state, a deliberate duplication. `miro` reaches a **remote** MCP server at `mcp.miro.com`, so whatever an engagement hands it leaves the container. `claude-security` is the single most expensive entry in context (~630 tok, mostly the descriptions of its 8 subagents) and needs `python3` 3.9+ on PATH — its own scanning runs entirely in-session, with no network of its own. Mid-engagement, add anything else with `claude plugin install <plugin>@<marketplace> --scope project`.
 
 Declaring is not enough on its own: a declared-but-uninstalled plugin gets its cache materialised but never loads, so its skills do not reach the session. `sync-agent-plugins.sh` performs the install, idempotently, and verifies the result:
 

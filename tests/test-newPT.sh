@@ -60,53 +60,105 @@ for t in "${!EXPECTED[@]}"; do
 done
 pass "every <type> maps to the documented INSTALL_GROUPS"
 
-# --- Test 4b: each <type> resolves to its plugin groups and their expansion ---
-# Containers inherit no plugins from the host, so these tables are the only thing
-# that decides what an engagement starts with. Groups per type, and the concrete ids they expand to. Both are asserted: the
-# group list is the thing an operator edits, the expansion is what reaches
-# .claude/settings.json.
-declare -A EXPECTED_PLUGIN_GROUPS=(
-    [web]="burp,triage"
-    [external]="burp,triage,supplychain"
-    [internal]="triage"
-    [cloud]="triage,supplychain"
-    [mobile]="mobile,triage"
-    [code]="sast,codereview,triage"
-    [full]="burp,triage,sast,codereview,mobile,supplychain"
-    [lite]=""
-    [none]=""
-)
+# --- Test 4b: each <type> resolves to base plugins + its own row -----------
+# Containers inherit no plugins from the host, so BASE_PLUGINS + type_plugins()
+# in newPT.sh are the only things that decide what an engagement starts with.
+# One row per type, 1:1 with INSTALL_GROUPS — no group indirection. Asserted
+# here: the base set leads every type's list, and what follows is that type's
+# documented row.
+BASE_PLUGINS="ask-questions-if-underspecified@trailofbits sharp-edges@trailofbits \
+insecure-defaults@trailofbits playground@claude-plugins-official \
+remember@claude-plugins-official code-simplifier@claude-plugins-official \
+miro@claude-plugins-official"
+BASE_PLUGINS="$(echo $BASE_PLUGINS)"
 BURP="burpsuite-project-parser@trailofbits"
-TRIAGE="fp-check@trailofbits"
-SAST="static-analysis@trailofbits semgrep-rule-creator@trailofbits insecure-defaults@trailofbits variant-analysis@trailofbits"
-CODEREVIEW="audit-context-building@trailofbits sharp-edges@trailofbits differential-review@trailofbits"
-MOBILE="firebase-apk-scanner@trailofbits c-review@trailofbits dwarf-expert@trailofbits"
-SUPPLYCHAIN="supply-chain-risk-auditor@trailofbits agentic-actions-auditor@trailofbits"
-declare -A EXPECTED_PLUGINS=(
-    [web]="$BURP $TRIAGE"
-    [external]="$BURP $TRIAGE $SUPPLYCHAIN"
-    [internal]="$TRIAGE"
-    [cloud]="$TRIAGE $SUPPLYCHAIN"
-    [mobile]="$MOBILE $TRIAGE"
-    [code]="$SAST $CODEREVIEW $TRIAGE"
-    [full]="$BURP $TRIAGE $SAST $CODEREVIEW $MOBILE $SUPPLYCHAIN"
+FPCHECK="fp-check@trailofbits"
+PW="playwright@claude-plugins-official"
+CR="code-review@claude-plugins-official"
+ACB="audit-context-building@trailofbits"
+VA="variant-analysis@trailofbits"
+SA="static-analysis@trailofbits"
+CSEC="claude-security@claude-plugins-official"
+APK="firebase-apk-scanner@trailofbits"
+SCRA="supply-chain-risk-auditor@trailofbits"
+TM="trailmark@trailofbits"
+declare -A EXPECTED_EXTRA=(
+    [web]="$BURP $FPCHECK $PW $CR"
+    [external]="$BURP $FPCHECK $PW $CR"
+    [internal]="$FPCHECK"
+    [cloud]="$FPCHECK $SCRA"
+    [mobile]="$FPCHECK $ACB $VA $CR $CSEC $APK $SCRA"
+    [code]="$ACB $VA $SA $FPCHECK $CR $CSEC $SCRA $TM"
+    [full]="$BURP $FPCHECK $PW $CR $ACB $VA $SA $CSEC $APK $SCRA $TM"
     [lite]=""
     [none]=""
 )
-for t in "${!EXPECTED_PLUGINS[@]}"; do
-    got="$(bash "$SCRIPT" --print-plugin-groups "$t")" \
-        || fail "--print-plugin-groups $t failed"
-    [ "$got" = "${EXPECTED_PLUGIN_GROUPS[$t]}" ] || \
-        fail "type=$t expected groups '${EXPECTED_PLUGIN_GROUPS[$t]}' got '$got'"
+for t in "${!EXPECTED_EXTRA[@]}"; do
     got="$(bash "$SCRIPT" --print-plugins "$t")" \
-        || fail "--print-plugins $t failed"
-    [ "$got" = "${EXPECTED_PLUGINS[$t]}" ] || \
-        fail "type=$t expected plugins '${EXPECTED_PLUGINS[$t]}' got '$got'"
+        || fail "--print-plugins $t failed (missing type_plugins() row?)"
+    # The base set is declared by every type, in order, before the type's own.
+    case "$got " in
+        "$BASE_PLUGINS "*) ;;
+        *) fail "type=$t must declare the base plugins first, got '$got'" ;;
+    esac
+    extra="${got#"$BASE_PLUGINS"}"
+    extra="${extra# }"
+    [ "$extra" = "${EXPECTED_EXTRA[$t]}" ] || \
+        fail "type=$t row expected '${EXPECTED_EXTRA[$t]}' got '$extra'"
 done
-# Groups compose without duplicating a plugin two of them share.
+# A row that repeats a base plugin must not install it twice.
 [ "$(bash "$SCRIPT" --print-plugins full | tr ' ' '\n' | sort | uniq -d)" = "" ] || \
-    fail "overlapping groups must not repeat a plugin id"
-pass "every <type> maps to the documented plugin groups and their expansion"
+    fail "base set and per-type row must not repeat a plugin id"
+# Structural rule, independent of what the rows hold: every declared id is
+# <plugin>@<marketplace> and its marketplace resolves in newPT.sh.
+for t in "${!EXPECTED_EXTRA[@]}"; do
+    for p in $(bash "$SCRIPT" --print-plugins "$t"); do
+        case "$p" in
+            *@*) ;;
+            *) fail "type=$t plugin '$p' is not <plugin>@<marketplace>" ;;
+        esac
+        grep -q "^        ${p##*@})" "$SCRIPT" || \
+            fail "type=$t plugin '$p' names a marketplace absent from marketplace_source()"
+    done
+done
+# The group layer is gone: no leftover table, no leftover debug flag.
+grep -q 'plugin_group\|PLUGIN_GROUPS' "$SCRIPT" && \
+    fail "newPT.sh must not keep the removed plugin-group tables"
+bash "$SCRIPT" --print-plugin-groups web >/dev/null 2>&1 && \
+    fail "--print-plugin-groups must be gone along with the groups"
+pass "every <type> maps 1:1 to the base set plus its own plugin row"
+
+# --- Test 4c: a plugin only appears where its toolchain is installed --------
+# The two tables are coupled in both directions: INSTALL_GROUPS decides which
+# plugins can actually work in a type. Getting this wrong is silent — the
+# scaffold succeeds and the skill fails inside the container — so assert it.
+declare -A PLUGIN_NEEDS_GROUP=(
+    ["static-analysis@trailofbits"]=sast          # install_sast: semgrep + codeql
+    ["trailmark@trailofbits"]=sast                # install_sast: pipx install trailmark
+    ["firebase-apk-scanner@trailofbits"]=reversing # install_reversing: apktool
+)
+INSTALLER="$(dirname "$SCRIPT")/install-offsec-tools.sh"
+for t in "${!EXPECTED_EXTRA[@]}"; do
+    plugins=" $(bash "$SCRIPT" --print-plugins "$t") "
+    groups=",$(bash "$SCRIPT" --print-groups "$t"),"
+    for p in "${!PLUGIN_NEEDS_GROUP[@]}"; do
+        case "$plugins" in
+            *" $p "*) ;;
+            *) continue ;;
+        esac
+        g="${PLUGIN_NEEDS_GROUP[$p]}"
+        case "$groups" in
+            *",$g,"*) ;;
+            *) fail "type=$t declares $p but does not install the '$g' group" ;;
+        esac
+    done
+done
+# ...and the installer must really provide the tool the plugin shells out to.
+grep -q 'pipx install trailmark' "$INSTALLER" || \
+    fail "install_sast() must install the trailmark CLI the plugin depends on"
+grep -q 'apt install -y binwalk apktool jadx' "$INSTALLER" || \
+    fail "install_reversing() must install apktool for firebase-apk-scanner"
+pass "every plugin is only declared where its toolchain group is installed"
 
 # --- Test 5: scaffolding 'internal' engagement drops .devcontainer/ with substituted INSTALL_GROUPS ---
 cd "$TMP"
@@ -315,25 +367,39 @@ jq -e . "$SET" >/dev/null || fail ".claude/settings.json must stay valid JSON af
 # Everything the template carries verbatim must survive the plugin injection.
 jq -e '.hooks.PreToolUse and .permissions.defaultMode == "bypassPermissions"' "$SET" >/dev/null || \
     fail ".claude/settings.json lost template content during plugin injection"
-# internal => one plugin, and the marketplace it comes from, resolved to a source
-jq -e '.enabledPlugins == {"fp-check@trailofbits": true}' "$SET" >/dev/null || \
-    fail ".claude/settings.json must carry the internal profile's plugin allowlist"
+# The allowlist is exactly what type_plugins() declares for the type (empty
+# today), every entry enabled. xargs normalises both sides to one sorted,
+# space-separated line, so an empty row compares as "" on both sides.
+want="$(bash "$SCRIPT" --print-plugins internal | xargs -n1 | sort | xargs)"
+got="$(jq -r '.enabledPlugins | keys[]' "$SET" | sort | xargs)"
+[ "$got" = "$want" ] || \
+    fail ".claude/settings.json allowlist is '$got', type_plugins() declares '$want'"
+jq -e '[.enabledPlugins[]] | all(. == true)' "$SET" >/dev/null || \
+    fail "every scaffolded plugin entry must be enabled (true)"
+# Both base marketplaces are declared in every engagement.
 jq -e '.extraKnownMarketplaces.trailofbits.source.repo == "trailofbits/skills"' "$SET" >/dev/null || \
-    fail ".claude/settings.json must declare the marketplace each plugin comes from"
+    fail ".claude/settings.json must declare the trailofbits marketplace"
+jq -e '.extraKnownMarketplaces["claude-plugins-official"].source.repo
+       == "anthropics/claude-plugins-official"' "$SET" >/dev/null || \
+    fail ".claude/settings.json must declare the official Claude marketplace"
 pass ".claude/settings.json scaffolded with the engagement's plugin allowlist"
 
-# --- Test 6a: a type with no default plugins still shows the empty placeholders ---
+# --- Test 6a: a type with no row of its own still carries the base set -----
 cd "$TMP"
 rm -rf engagement-lite
 bash "$SCRIPT" lite engagement-lite >/dev/null
-jq -e '.enabledPlugins == {}' engagement-lite/.claude/settings.json >/dev/null || \
-    fail "a no-plugin type must scaffold an empty enabledPlugins placeholder"
-# The base marketplace is declared regardless: that is what makes it browsable
-# in /plugin and installable by name mid-engagement.
-jq -e '.extraKnownMarketplaces.trailofbits.source.repo == "trailofbits/skills"' \
+want="$(bash "$SCRIPT" --print-plugins lite | xargs -n1 | sort | xargs)"
+got="$(jq -r '.enabledPlugins | keys[]' engagement-lite/.claude/settings.json | sort | xargs)"
+[ -n "$want" ] || fail "the base plugin set must not be empty"
+[ "$got" = "$want" ] || \
+    fail "a type with no row must still declare the base plugins, got '$got'"
+# The base marketplaces are declared regardless: that is what makes them
+# browsable in /plugin and installable by name mid-engagement.
+jq -e '(.extraKnownMarketplaces | keys | sort)
+       == ["claude-plugins-official", "trailofbits"]' \
     engagement-lite/.claude/settings.json >/dev/null || \
-    fail "every engagement must declare the base marketplace, plugins or not"
-pass "no-plugin types keep the base marketplace and an empty allowlist"
+    fail "every engagement must declare both base marketplaces, plugins or not"
+pass "a type with no row of its own keeps the base marketplaces and base plugins"
 cd "$TMP"
 
 # --- Test 6b: .claude/hooks/ carries shared + Claude-only scripts, executable ---
@@ -445,6 +511,8 @@ output="$(bash "$SCRIPT" cloud engagement-cloud)" || fail "newPT.sh cloud engage
 echo "$output" | grep -q "type:[[:space:]]*cloud"                  || fail "output should name the type"
 echo "$output" | grep -q "groups:[[:space:]]*base,cloud,utils"     || fail "output should print the resolved groups"
 echo "$output" | grep -q "base:[[:space:]]*debian"                 || fail "output should print the resolved base"
+echo "$output" | grep -q "markets:[[:space:]]*trailofbits claude-plugins-official" \
+    || fail "output should print both always-declared marketplaces"
 echo "$output" | grep -q "engagement-cloud/.devcontainer/Dockerfile" || fail "output should print the Dockerfile path"
 echo "$output" | grep -q "up.sh"                                   || fail "output should suggest the .devcontainer/up.sh wrapper"
 echo "$output" | grep -q "Reopen in Container"                     || fail "output should mention the VS Code 'Reopen in Container' alternative"
@@ -487,14 +555,17 @@ cd "$TMP"
 rm -rf engagement-sync
 bash "$SCRIPT" web engagement-sync >/dev/null
 plan="$(bash "$SYNC" engagement-sync --dry-run)" || fail "sync --dry-run failed"
-echo "$plan" | grep -q 'would run: claude plugin marketplace add trailofbits/skills --scope project' || \
-    fail "plan must register each declared marketplace at project scope"
-for p in burpsuite-project-parser fp-check; do
-    echo "$plan" | grep -q "would run: claude plugin install $p@trailofbits --scope project -y" || \
-        fail "plan must install declared plugin $p at project scope"
+for m in trailofbits/skills anthropics/claude-plugins-official; do
+    echo "$plan" | grep -q "would run: claude plugin marketplace add $m --scope project" || \
+        fail "plan must register each declared marketplace at project scope"
 done
-echo "$plan" | grep -q "would run: codex plugin add burpsuite-project-parser@trailofbits" || \
-    fail "plan must apply the same list to Codex"
+# Whatever the type declares gets installed at project scope and mirrored to Codex.
+for p in $(bash "$SCRIPT" --print-plugins web); do
+    echo "$plan" | grep -q "would run: claude plugin install $p --scope project -y" || \
+        fail "plan must install declared plugin $p at project scope"
+    echo "$plan" | grep -q "would run: codex plugin add $p" || \
+        fail "plan must apply the same list to Codex"
+done
 
 # An entry set to false is declared-but-off and must not be installed.
 jq '.enabledPlugins["fp-check@trailofbits"] = false' \
@@ -503,13 +574,19 @@ jq '.enabledPlugins["fp-check@trailofbits"] = false' \
 bash "$SYNC" engagement-sync --dry-run | grep -q 'install fp-check@trailofbits' && \
     fail "a plugin set to false must not be installed"
 
-# No allowlist at all: exit 0 with nothing to do (cloud/mobile/lite/none types).
+# No plugin enabled at all: exit 0 after registering the marketplaces. Every
+# type ships the base set now, so empty the allowlist by hand to reach that path
+# — it is what an operator gets after stripping the list from settings.json.
 rm -rf engagement-sync-empty
 bash "$SCRIPT" lite engagement-sync-empty >/dev/null
+jq '.enabledPlugins = {}' engagement-sync-empty/.claude/settings.json > "$TMP/s.json" && \
+    mv "$TMP/s.json" engagement-sync-empty/.claude/settings.json
 out="$(bash "$SYNC" engagement-sync-empty --dry-run)" || fail "empty allowlist should exit 0"
 echo "$out" | grep -q 'none enabled' || fail "empty allowlist should say nothing is enabled"
 echo "$out" | grep -q 'would run: claude plugin marketplace add trailofbits/skills' || \
-    fail "an empty allowlist must still register the base marketplace"
+    fail "an empty allowlist must still register the base marketplaces"
+echo "$out" | grep -q 'would run: claude plugin marketplace add anthropics/claude-plugins-official' || \
+    fail "an empty allowlist must still register the official marketplace"
 echo "$out" | grep -q 'plugin install' && \
     fail "an empty allowlist must not install anything"
 
@@ -524,8 +601,8 @@ pass "sync-agent-plugins.sh plans exactly the declared allowlist (and refuses a 
 # otherwise the mistake would only surface inside the container's postCreate.
 grep -q 'no marketplace source known' "$SCRIPT" || \
     fail "newPT.sh must validate that every plugin's marketplace resolves to a source"
-grep -q 'unknown plugin group' "$SCRIPT" || \
-    fail "newPT.sh must reject a plugin group name that does not resolve"
+grep -q 'no plugin row for engagement type' "$SCRIPT" || \
+    fail "newPT.sh must refuse a type with no type_plugins() row"
 pass "newPT.sh validates its plugin tables before scaffolding"
 
 rm -f /tmp/np.err
