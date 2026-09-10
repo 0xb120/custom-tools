@@ -12,6 +12,8 @@ The managed evidence block renders each registered path as a navigable Markdown 
 
 Every finding must include at least one complete, unredacted HTTP request as evidence (`--kind http-request`): the real request confirmed working during the test, with no removed headers or redacted fields, so the client can replay it at patch time. `doctor` blocks the stop and `doctor --strict` fails until each active finding has an `http-request` evidence whose file contains a valid request line (`METHOD path HTTP/x.y`). Opt out only for genuinely non-HTTP findings by adding `<!-- no-http-request: <reason> -->` to the write-up.
 
+Write-up Markdown must stay copy-paste-ready: one paragraph per line (never hard-wrapped), and every fenced code block opened with a language (`http` for raw requests and responses, `sh` for commands, `json`/`xml`/`sql` for payloads, `text` when nothing else fits) and started at column 0 — an indented fence nests into the surrounding list and breaks copy-paste out of the report. The Claude `PostToolUse` hook `check-report-format.sh` rejects an offending edit; Codex edits go through `apply_patch` and are not hooked, so there the rule stands on the author.
+
 The activity-level findings index is rendered from the DB. IDs are `F##`, never reused; active rows are severity-sorted and link to the write-up.
 
 ## Severity scale

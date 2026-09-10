@@ -133,6 +133,10 @@ Every finding's `## References` section must cite at least 3 external references
 
 Every finding must register at least one complete, unredacted HTTP request as evidence (`--kind http-request`) — a real request confirmed working during the test, with **no removed headers or redacted fields** — so the client has a replayable example at patch time. `db/ptctl.py doctor` **blocks the stop** and `doctor --strict` fails until each active finding has an `http-request` evidence whose file contains a valid request line. Capture it while it is fresh, in the session where you confirm the issue. For a genuinely non-HTTP finding, opt out by adding `<!-- no-http-request: <reason> -->` to the write-up.
 
+### Report formatting
+
+Report prose is copy-paste-ready Markdown: one paragraph is one continuous line, never hard-wrapped mid-sentence — the renderer wraps it. Every fenced code block must open with a language (```` ```sh ````, ```` ```http ````, ```` ```json ````; ```` ```text ```` when nothing else fits) and must start at column 0 — never indent or tab a fence, not even inside a numbered reproduction step. A `PostToolUse` hook rejects a finding write-up or `<activity>.md` edit that breaks either rule.
+
 ## Session continuity
 
 `TODO.md` contains pending actions, grouped under `## <segment>` and written as Markdown checkboxes. Update it immediately as work emerges or completes. `journal.md` contains dated hypotheses, dead ends, decisions, and analysis—not tasks.
@@ -168,6 +172,6 @@ A host is a stable machine identity; a service is an asset hanging from it. At I
 
 Always **target by name**, not by IP, once a stable name is known. Use an IP only until a name resolves. The same rule applies to journal tags and `bash db/whatweknow.sh <name-or-ip>`.
 
-Raw SQL is allowed for inventory and credentials; render afterward with `bash db/render.sh`. Findings and observations always go through `ptctl.py`. Report prose must be valid Markdown without hard-wrapped paragraphs; `<activity>.md` indexes must not be edited by hand.
+Raw SQL is allowed for inventory and credentials; render afterward with `bash db/render.sh`. Findings and observations always go through `ptctl.py`. Report prose must be valid Markdown and follow *Report formatting* above; `<activity>.md` indexes must not be edited by hand.
 
 Consult `PT_PLAYBOOK.md` only when severity definitions, inventory SQL, saved queries, report fields, or detailed storage conventions are needed.
