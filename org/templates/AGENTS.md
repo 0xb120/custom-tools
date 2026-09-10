@@ -135,7 +135,7 @@ Every finding must register at least one complete, unredacted HTTP request as ev
 
 ### Report formatting
 
-Report prose is copy-paste-ready Markdown: one paragraph is one continuous line, never hard-wrapped mid-sentence — the renderer wraps it. Every fenced code block must open with a language (```` ```sh ````, ```` ```http ````, ```` ```json ````; ```` ```text ```` when nothing else fits) and must start at column 0 — never indent or tab a fence, not even inside a numbered reproduction step. A `PostToolUse` hook rejects a finding write-up or `<activity>.md` edit that breaks either rule.
+Report prose is copy-paste-ready Markdown: one paragraph is one continuous line, never hard-wrapped mid-sentence — the renderer wraps it. Every fenced code block must open with a language (```` ```sh ````, ```` ```http ````, ```` ```json ````; ```` ```text ```` when nothing else fits). Nothing is ever indented, with a single exception: a nested list item, indented with spaces and never a tab. Everything else starts at column 0 — fences, prose, tables — including the content that belongs to a bullet or a numbered reproduction step. A `PostToolUse` hook rejects a finding write-up or `<activity>.md` edit that breaks any of these.
 
 ## Session continuity
 

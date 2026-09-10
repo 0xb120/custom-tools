@@ -230,7 +230,7 @@ The Stop hook runs `doctor` and `session check`. It blocks an agent from ending 
 | Session start | Opens the session and loads bounded context including `AGENTS.md` | Opens the session and loads bounded context; Codex reads `AGENTS.md` natively |
 | Shell command | Writes the git-ignored command audit log | Same shared hook |
 | DB write | Re-renders Markdown views | Same shared hook |
-| Report edit | Checks report prose and code-fence formatting | Claude-only |
+| Report edit | Checks report prose, code-fence and indentation formatting | Claude-only |
 | Stop | Runs the engagement doctor and handoff check | Same shared hook |
 
 Shared scripts live in `templates/hooks/`. Claude-only hooks live in `templates/claude/hooks/`.
