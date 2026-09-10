@@ -4,7 +4,7 @@
 # rendered activity file:
 #   - report prose is never hard-wrapped mid-paragraph (pre-existing rule),
 #   - every fenced code block opens with a language (```sh, ```http, ...),
-#   - no fence line is indented or tab-ed.
+#   - nothing is indented except nested list items, which use spaces, never tabs.
 # Working files (journal/TODO/AGENTS) and the reference templates stay exempt.
 # Requires jq (the hook exits 0 without it).
 set -eo pipefail
@@ -149,5 +149,83 @@ MD
 hook "$TMP/findings/fenced-prose.md" \
     || fail "multi-line content inside a fence must not count as hard-wrapped: $HOOK_OUT"
 pass "prose inside a fenced block is not hard-wrap"
+
+# --- Test 11: nested list items may be indented with spaces -----------------
+cat > "$TMP/findings/nested.md" <<'MD'
+# Nested list
+
+## Reproduction Steps
+
+1. Authenticate as tenant A:
+    - user `alice@a.test`
+    - role `customer`
+2. Replay the request as tenant B.
+MD
+hook "$TMP/findings/nested.md" \
+    || fail "a space-indented nested list item is the one allowed indentation: $HOOK_OUT"
+pass "nested list items may be indented with spaces"
+
+# --- Test 12: an indented line that is not a list item is rejected ----------
+printf '# Indented prose\n\n1. Send the request.\n\n    The response leaks tenant B.\n' \
+    > "$TMP/findings/indented-prose.md"
+if hook "$TMP/findings/indented-prose.md"; then
+    fail "an indented non-list line must be rejected"
+fi
+grep -q 'line 5: indented line' <<<"$HOOK_OUT" \
+    || fail "the message must point at the indented line: $HOOK_OUT"
+pass "an indented line that is not a list item is rejected"
+
+# --- Test 13: a tab-indented list item is rejected --------------------------
+printf '# Tabbed list\n\n- Top level\n\t- Nested with a tab\n' \
+    > "$TMP/findings/tabbed-list.md"
+if hook "$TMP/findings/tabbed-list.md"; then
+    fail "a tab-indented list item must be rejected"
+fi
+grep -q 'line 4: tab-indented list item' <<<"$HOOK_OUT" \
+    || fail "the message must name the tab indentation: $HOOK_OUT"
+pass "a tab-indented list item is rejected"
+
+# --- Test 14: indentation inside a fenced block is content, not layout ------
+cat > "$TMP/findings/fenced-indent.md" <<'MD'
+# Fenced indentation
+
+```json
+{
+    "tenant": "b",
+    "items": [
+        {"id": 42}
+    ]
+}
+```
+MD
+hook "$TMP/findings/fenced-indent.md" \
+    || fail "indented lines inside a fence are payload and must pass: $HOOK_OUT"
+pass "indentation inside a fenced block is left alone"
+
+# --- Test 15: a multi-line HTML comment is not report prose -----------------
+cat > "$TMP/findings/commented.md" <<'MD'
+# Commented
+
+<!--
+The lines of a comment block are not report prose and must never be read
+as a hard-wrapped paragraph by the formatting check.
+-->
+
+## Impact
+
+An attacker with a customer account reads any other tenant's orders.
+MD
+hook "$TMP/findings/commented.md" \
+    || fail "an HTML comment block must not be linted as prose: $HOOK_OUT"
+pass "a multi-line HTML comment is not report prose"
+
+# --- Test 16: the shipped template obeys the rules it states ----------------
+# ptctl copies org/templates/finding.md to findings/<slug>.md, which IS in
+# scope — so the template itself must pass, or the first edit of every new
+# finding trips the hook on boilerplate the tester never wrote.
+cp "$ROOT/org/templates/finding.md" "$TMP/findings/from-template.md"
+hook "$TMP/findings/from-template.md" \
+    || fail "the finding template must satisfy the report-format rules: $HOOK_OUT"
+pass "the shipped template obeys the rules it states"
 
 echo "All report-format tests passed."

@@ -6,7 +6,8 @@ Reference template — `db/ptctl.py finding create` copies and initializes it.
 - Update canonical metadata with `db/ptctl.py finding update`.
 - Evidence inside the managed markers is rendered from the evidence registry.
 - Keep prose tight: no marketing, no CVSS narrative, no copy-pasted CWE blurbs.
-- One paragraph per line; every code fence carries a language and starts at column 0.
+- One paragraph per line; every code fence carries a language.
+- Indent nothing but nested list items (spaces, never tabs); everything else starts at column 0.
 -->
 
 - **Vuln_ID**: `<finding_slug>`
