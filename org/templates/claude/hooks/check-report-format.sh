@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# PostToolUse(Write|Edit) hook — enforce the "copy-paste-ready prose" rule from
-# AGENTS.md (§ Prose formatting) on report files: report prose must never be
-# hard-wrapped mid-sentence. One paragraph = one continuous line; the renderer
-# wraps it. Hard newlines belong only between block elements.
+# PostToolUse(Write|Edit) hook — enforce the report-formatting rules from
+# AGENTS.md (§ Report formatting) on report files:
+#   1. Prose is copy-paste-ready: never hard-wrapped mid-sentence. One paragraph
+#      = one continuous line; the renderer wraps it. Hard newlines belong only
+#      between block elements.
+#   2. Every fenced code block opens with a language (```sh, ```http, ```json),
+#      and no fence line is indented or tab-ed — an indented fence turns into an
+#      indented-code block or nests inside the surrounding list, which breaks
+#      copy-paste and the report renderer.
 #
 # Scope: *.md under findings/ and the root-level <activity>.md (identified by
 # its db:render markers, not by name). Working files — journal.md, TODO.md,
@@ -12,9 +17,11 @@
 # are all flowing prose — i.e. with no blank line, heading, list marker, table
 # row, blockquote, code fence, horizontal rule, HTML/marker line, or `Label:` /
 # `**Label**:` definition line breaking them apart. That run IS the violation.
+# A fence violation is a ``` line with leading whitespace, or an *opening* fence
+# whose info string is empty (the closing fence never carries a language).
 #
-# Exit 2 with the offending line ranges so Claude rewrites the paragraph onto a
-# single line. Exit 0 when the file is clean or out of scope.
+# Exit 2 with the offending line numbers so Claude fixes the file. Exit 0 when
+# the file is clean or out of scope.
 
 INPUT="$(cat)"
 
@@ -45,11 +52,25 @@ if [ "$in_scope" -eq 0 ] && grep -qF '<!-- db:render' "$file" 2>/dev/null; then
 fi
 [ "$in_scope" -eq 0 ] && exit 0
 
-ranges="$(awk '
-function flush(){ if (count >= 2) printf "  lines %d-%d\n", start, last; count=0; start=0; last=0 }
+# One pass, two classes of violation, tagged so the report can explain each.
+report="$(awk '
+function flush(){ if (count >= 2) printf "wrap\t  lines %d-%d\n", start, last; count=0; start=0; last=0 }
 BEGIN { incode=0 }
 {
-    if ($0 ~ /^[[:space:]]*```/)                                  { flush(); incode=!incode; next }  # code fence
+    if ($0 ~ /^[[:space:]]*```/) {                                                 # code fence
+        flush()
+        if ($0 ~ /^[[:space:]]/)
+            printf "fence\t  line %d: indented code fence\n", NR
+        if (!incode) {
+            info = $0
+            sub(/^[[:space:]]*`+/, "", info)
+            sub(/[[:space:]]+$/, "", info)
+            if (info == "")
+                printf "fence\t  line %d: code fence without a language\n", NR
+        }
+        incode = !incode
+        next
+    }
     if (incode)                                                  { next }
     if ($0 ~ /^[[:space:]]*$/)                                   { flush(); next }  # blank
     if ($0 ~ /^[[:space:]]*#/)                                   { flush(); next }  # heading
@@ -66,15 +87,34 @@ BEGIN { incode=0 }
 END { flush() }
 ' "$file")"
 
-[ -z "$ranges" ] && exit 0
+[ -z "$report" ] && exit 0
+
+wrapped="$(printf '%s\n' "$report" | awk -F'\t' '$1=="wrap"{print $2}')"
+fences="$(printf '%s\n'  "$report" | awk -F'\t' '$1=="fence"{print $2}')"
 
 {
     echo "Report-formatting violation in ${file}:"
-    echo "$ranges"
+    if [ -n "$wrapped" ]; then
+        echo "Hard-wrapped prose:"
+        echo "$wrapped"
+    fi
+    if [ -n "$fences" ]; then
+        echo "Code blocks:"
+        echo "$fences"
+    fi
     echo
-    echo "AGENTS.md (§ Prose formatting): report prose must be copy-paste-ready and"
-    echo "must NEVER be hard-wrapped mid-sentence. Rewrite each flagged paragraph as"
-    echo "ONE continuous line — keep newlines only between paragraphs, list items,"
-    echo "and table rows."
+    if [ -n "$wrapped" ]; then
+        echo "AGENTS.md (§ Report formatting): report prose must be copy-paste-ready"
+        echo "and must NEVER be hard-wrapped mid-sentence. Rewrite each flagged"
+        echo "paragraph as ONE continuous line — keep newlines only between"
+        echo "paragraphs, list items, and table rows."
+    fi
+    if [ -n "$fences" ]; then
+        [ -n "$wrapped" ] && echo
+        echo "AGENTS.md (§ Report formatting): every fenced code block must open with"
+        echo "a language (\`\`\`sh, \`\`\`http, \`\`\`json, \`\`\`text when nothing fits) and no"
+        echo "fence line may be indented or tab-ed — start every \`\`\` at column 0,"
+        echo "including inside a numbered reproduction step."
+    fi
 } >&2
 exit 2
