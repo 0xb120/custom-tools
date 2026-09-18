@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Regression tests for bounded boot context, deliberate retrieval, and handoff freshness.
+# Regression tests for bounded boot context, deliberate retrieval, the cleanup and
+# coverage registers, and concurrent-session safety.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
@@ -66,13 +67,18 @@ grep -q 'BIAS_SENTINEL_COMPLETED' <<<"$boot" && fail "boot loaded completed TODO
 grep -q 'BIAS_SENTINEL_JOURNAL' <<<"$boot" && fail "boot loaded journal prose"
 grep -q 'FINDING_PROSE_SENTINEL' <<<"$boot" && fail "boot loaded finding prose"
 grep -q 'EVIDENCE_BODY_SENTINEL' <<<"$boot" && fail "boot loaded an evidence body"
-grep -q 'Never lose a plausible issue' <<<"$boot" && fail "Codex-style boot duplicated AGENTS.md"
+grep -q 'Register everything, conclude nothing' <<<"$boot" && fail "boot duplicated AGENTS.md"
 pass "boot is bounded and excludes historical/prose/evidence bias"
 
-claude_boot="$("${PT[@]}" context boot --include-rules --max-chars 16000)"
-grep -q 'Never lose a plausible issue' <<<"$claude_boot" || \
-    fail "Claude-style boot did not bridge hard engagement rules"
-[ "${#claude_boot}" -le 16000 ] || fail "Claude-style boot exceeded its budget"
+# Both clients discover AGENTS.md natively (Codex reads it; Claude Code
+# hardcodes CLAUDE.md / AGENTS.md discovery), so no boot variant may inline it
+# and the bridge flag that used to must be gone.
+"${PT[@]}" context boot --include-rules >/dev/null 2>&1 && \
+    fail "the removed --include-rules bridge should no longer be accepted"
+# AGENTS.md is still paid once per session, natively. Keep it small.
+rules_bytes="$(wc -c < AGENTS.md)"
+[ "$rules_bytes" -le 11900 ] || \
+    fail "AGENTS.md is $rules_bytes B; it is always-on in every session, shrink it"
 
 explain="$("${PT[@]}" context explain)"
 grep -q 'journal.md prose' <<<"$explain" || fail "context explain did not disclose journal exclusion"
@@ -96,136 +102,130 @@ grep -q 'req-100.http' <<<"$resume" || fail "resume omitted selected evidence re
 grep -q 'EVIDENCE_BODY_SENTINEL' <<<"$resume" && fail "resume should not inline raw evidence bodies"
 pass "focus, history, and resume progressively disclose distinct context layers"
 
-if "${PT[@]}" session check >/dev/null 2>&1; then
-    fail "handoff should be stale after engagement mutations"
-fi
-delta="$("${PT[@]}" session delta)"
-grep -q '+ scans/customer-portal/burp/req-100.http' <<<"$delta" || \
-    fail "session delta omitted newly captured evidence"
-grep -q 'Capture gate: REQUIRED' <<<"$delta" || \
-    fail "new scans/poc artifacts should activate the capture gate"
-if "${PT[@]}" session close --focus 'authorization testing' >/dev/null 2>&1; then
-    fail "session close should require an outcome when artifacts changed"
-fi
-"${PT[@]}" session close \
-    --focus 'authorization testing on orders API' \
-    --outcome captured \
-    --completed 'captured O0001 and promoted F01' \
-    --live-state 'Burp Repeater item 100 is the source exchange' \
-    --next 'test write and delete operations' \
-    --reference F01 >/dev/null
-"${PT[@]}" session check >/dev/null || fail "session close did not refresh handoff"
-grep -q 'EVIDENCE_BODY_SENTINEL' .context/state.json && \
-    fail "session state must never contain evidence bodies"
-"${PT[@]}" session start --client test --quiet
-active_boot="$("${PT[@]}" context boot --max-chars 16000)"
-grep -q 'Session.*active since' <<<"$active_boot" || \
-    fail "boot did not surface the active capture gate"
-"${PT[@]}" context focus --topic authz-topic >/dev/null
-"${PT[@]}" context resume F01 >/dev/null
-if "${PT[@]}" session check >/dev/null 2>&1; then
-    fail "an active session should require an explicit closing outcome"
-fi
-if printf '{}' | CLAUDE_PROJECT_DIR="$PWD" \
-    bash .claude/hooks/engagement-doctor.sh >"$TMP/active-hook.out" 2>&1; then
-    fail "Stop hook should block an active session with no outcome"
-fi
-grep -q 'Active session has no closing outcome' "$TMP/active-hook.out" || \
-    fail "Stop hook did not explain the missing session outcome"
-"${PT[@]}" session close \
-    --focus 'context-only orientation' \
-    --outcome administrative \
-    --assessment 'reviewed bounded context without executing tests' >/dev/null
-"${PT[@]}" session check >/dev/null || fail "closing outcome did not clear active gate"
-pass "active session lifecycle requires an outcome even without local artifacts"
+# --- Cleanup register: the one thing no query can rediscover -----------------
+"${PT[@]}" cleanup add --what 'created user pentest_tmp' --asset A1 --owner sessionA \
+    >"$TMP/cleanup-add.out" || fail "cleanup add failed"
+grep -q 'C01 registered (open)' "$TMP/cleanup-add.out" || fail "cleanup add did not mint C01"
+"${PT[@]}" cleanup add --what 'uploaded shell.aspx' --location 'https://portal/uploads/' \
+    --owner sessionB >/dev/null || fail "second cleanup add failed"
 
-sqlite3 db/engagement.db \
-    "UPDATE asset SET notes='authorization target' WHERE id=1;"
-delta="$("${PT[@]}" session delta)"
-grep -q 'Database state: changed' <<<"$delta" || \
-    fail "session delta omitted a structured database change"
-if "${PT[@]}" session check >/dev/null 2>&1; then
-    fail "structured database changes should stale the handoff"
+boot="$("${PT[@]}" context boot)"
+grep -q 'Cleanup obligations still open' <<<"$boot" || \
+    fail "boot omitted the cleanup section"
+grep -q 'created user pentest_tmp' <<<"$boot" || \
+    fail "boot omitted an open cleanup obligation"
+grep -q 'Suggested next work' <<<"$boot" && \
+    fail "boot must not carry a previous session's plan any more"
+grep -q 'handoff' <<<"$boot" && fail "boot still references a handoff"
+
+doctor_out="$("${PT[@]}" doctor 2>&1 || true)"
+grep -q '2 cleanup obligation(s) still open' <<<"$doctor_out" || \
+    fail "doctor did not warn about open cleanup obligations"
+if "${PT[@]}" doctor --strict >/dev/null 2>&1; then
+    fail "doctor --strict must fail while cleanup obligations are open"
 fi
-"${PT[@]}" session close \
-    --focus 'asset inventory enrichment' \
-    --completed 'marked A1 as the authorization target' \
-    --next 'continue write-operation coverage' \
-    --reference A1 >/dev/null
-"${PT[@]}" session check >/dev/null || fail "database snapshot did not refresh"
+"${PT[@]}" cleanup done C01 --note 'removed, confirmed gone' >/dev/null || fail "cleanup done failed"
+"${PT[@]}" cleanup list | grep -q 'C02' || fail "cleanup list lost the open obligation"
+"${PT[@]}" cleanup list | grep -q 'C01' && fail "cleanup list should hide resolved rows"
+"${PT[@]}" cleanup list --all | grep -q 'C01' || fail "cleanup list --all lost the resolved row"
+"${PT[@]}" cleanup done C02 >/dev/null
+pass "cleanup register survives sessions, blocks --strict, and reaches boot context"
 
-printf 'GET /api/orders/999 returned 403\n' \
-    > scans/customer-portal/burp/negative-999.txt
-if "${PT[@]}" session close \
-    --focus 'negative authorization test' \
-    --outcome captured --reference F01 >/dev/null 2>&1; then
-    fail "an old unchanged finding must not satisfy the capture gate"
+# --- Attempt log: what was tried is a fact, "it is clean" is not ------------
+# The ledger records attempts and refuses to record verdicts, so the note that
+# describes the attempt is mandatory.
+if "${PT[@]}" coverage add --asset A1 --class bola >"$TMP/coverage-no-note.out" 2>&1; then
+    fail "an attempt with nothing said about it should not be recordable"
 fi
-if "${PT[@]}" session close \
-    --focus 'negative authorization test' \
-    --outcome no-finding >/dev/null 2>&1; then
-    fail "no-finding outcome should require an assessment"
-fi
-if printf '{}' | CLAUDE_PROJECT_DIR="$PWD" \
-    bash .claude/hooks/engagement-doctor.sh >"$TMP/artifact-hook.out" 2>&1; then
-    fail "Stop hook should block an unresolved scans/poc artifact delta"
-fi
-grep -q 'Capture gate: REQUIRED' "$TMP/artifact-hook.out" || \
-    fail "Stop hook did not surface the capture gate"
-"${PT[@]}" session close \
-    --focus 'negative authorization test' \
-    --outcome no-finding \
-    --assessment 'order 999 remained forbidden for the cross-tenant account' \
-    --completed 'tested inaccessible order 999' \
-    --next 'continue write-operation coverage' >/dev/null
-"${PT[@]}" session check >/dev/null || fail "no-finding assessment did not resolve gate"
+grep -q 'note is required' "$TMP/coverage-no-note.out" || \
+    fail "coverage add should explain that the attempt itself is the record"
+"${PT[@]}" coverage add --asset A1 --class bola \
+    --note 'cross-tenant write and delete both 403' >/dev/null || fail "coverage add failed"
+"${PT[@]}" coverage add --asset A1 --class idor \
+    --note 'alias of bola, must normalize' >/dev/null
+"${PT[@]}" coverage list > "$TMP/coverage.out"
+grep -q 'bola (2 attempt(s))' "$TMP/coverage.out" || \
+    fail "idor should normalize onto bola and keep both attempts"
+grep -q 'cross-tenant write and delete' "$TMP/coverage.out" || \
+    fail "an earlier attempt must not be superseded away by a later one"
+[ "$(grep -c 'A1 portal.example.test:443 bola' "$TMP/coverage.out")" -eq 1 ] || \
+    fail "attempts against one target/class should group under one heading"
+grep -q 'cross-tenant write and delete' <<<"$("${PT[@]}" context boot)" && \
+    fail "attempt notes must not reach automatic boot context"
+pass "attempt log records what was tried, normalizes classes, stays out of boot"
 
-touch scans/customer-portal/burp/negative-999.txt
-delta="$("${PT[@]}" session delta)"
-grep -q '~ scans/customer-portal/burp/negative-999.txt' <<<"$delta" && \
-    fail "metadata-only timestamp changes must not count as content changes"
-grep -q 'Capture gate: not required' <<<"$delta" || \
-    fail "metadata-only timestamp changes should not activate the gate"
+# --- Coverage gaps: memory that points at what nobody has touched -----------
+sqlite3 db/engagement.db "
+  INSERT INTO host(name) VALUES ('api.example.test');
+  INSERT INTO host_segment(host_id, segment_id)
+    VALUES ((SELECT id FROM host WHERE name='api.example.test'),
+            (SELECT id FROM segment WHERE name='customer-portal'));
+  INSERT INTO asset(host_id, port, protocol, tls, technologies)
+    VALUES ((SELECT id FROM host WHERE name='api.example.test'), 8443, 'https', 1, 'internal-api');"
+gaps="$("${PT[@]}" coverage gaps)"
+grep -q 'api.example.test:8443' <<<"$gaps" || fail "gaps omitted the untested asset"
+grep -q 'A1 ' <<<"$(sed -n '/Never tested/,/^$/p' <<<"$gaps")" && \
+    fail "an asset with coverage must not be listed as never tested"
+grep -q 'Assets with nothing recorded: 1' <<<"$("${PT[@]}" context boot)" || \
+    fail "boot should point at untested assets without listing them"
+pass "coverage gaps exposes unexplored surface instead of a backlog to close"
 
-printf 'DELETE /api/orders/999 also returned 403\n' \
-    >> scans/customer-portal/burp/negative-999.txt
-delta="$("${PT[@]}" session delta)"
-grep -q '~ scans/customer-portal/burp/negative-999.txt' <<<"$delta" || \
-    fail "session delta omitted a modified artifact"
-"${PT[@]}" session close \
-    --focus 'negative authorization retest' \
-    --outcome no-finding \
-    --assessment 'read and delete operations both remained forbidden' >/dev/null
+# --- Concurrency: two sessions must not erase or exempt each other ----------
+# The removed .context/ layer failed exactly here: one global active marker and
+# one global baseline meant the first session to close absorbed the other's
+# artifacts and silently released its capture gate.
+test -d .context && fail ".context/ session state should no longer exist"
+mkdir -p scans/customer-portal/parallel
+echo "session A output" > scans/customer-portal/parallel/a.txt
+echo "session B output" > scans/customer-portal/parallel/b.txt
+"${PT[@]}" cleanup add --what 'session A left a tunnel open' --owner sessionA >/dev/null
+"${PT[@]}" coverage add --asset A1 --class xss --note 'reflected params only' \
+    --owner sessionA >/dev/null
+"${PT[@]}" coverage add --asset A1 --class auth --note 'no lockout bypass found' \
+    --owner sessionB >/dev/null
+"${PT[@]}" coverage list | grep -q 'reflected params only' || fail "session A attempt lost"
+"${PT[@]}" coverage list | grep -q 'no lockout bypass found' || fail "session B attempt lost"
+"${PT[@]}" cleanup list | grep -q 'session A left a tunnel open' || \
+    fail "one session's cleanup obligation was lost"
 
-rm scans/customer-portal/burp/negative-999.txt
-delta="$("${PT[@]}" session delta)"
-grep -q -- '- scans/customer-portal/burp/negative-999.txt' <<<"$delta" || \
-    fail "session delta omitted a deleted artifact"
-"${PT[@]}" session close \
-    --focus 'artifact cleanup' \
-    --outcome administrative \
-    --assessment 'removed temporary negative-test transcript after recording result' \
-    --completed 'cleaned temporary transcript' >/dev/null
-pass "capture gate tracks add/modify/delete and rejects unchanged canonical references"
+# Concurrent writers converge instead of clobbering: same fingerprint, one O####.
+for owner in A B; do
+    "${PT[@]}" observation add \
+        --title 'concurrent capture of the same issue' \
+        --family BOLA --segment customer-portal --asset A1 \
+        --component orders-api --boundary cross-tenant \
+        --method POST --route '/api/orders' --selector orderId \
+        --attacker-role customer --target-role customer \
+        --source "session $owner" >/dev/null &
+done
+wait
+observations="$(sqlite3 db/engagement.db "SELECT COUNT(*) FROM observation WHERE route='/api/orders';")"
+[ "$observations" -eq 1 ] || \
+    fail "concurrent identical captures should converge on one observation (got $observations)"
+pass "concurrent sessions share the DB without erasing or exempting each other"
 
-printf '\n#decision authorization matrix updated\n' >> journal.md
-if printf '{}' | CLAUDE_PROJECT_DIR="$PWD" \
-    bash .claude/hooks/engagement-doctor.sh >"$TMP/stale-hook.out" 2>&1; then
-    fail "Stop hook should block after work changed beyond the handoff"
-fi
-grep -q 'session handoff is stale' "$TMP/stale-hook.out" || \
-    fail "Stop hook did not explain stale handoff"
-
-"${PT[@]}" session close \
-    --focus 'authorization testing on orders API' \
-    --completed 'recorded authorization matrix decision' \
-    --next 'test write and delete operations' \
-    --reference F01 >/dev/null
+# --- Stop hook reports, never blocks ----------------------------------------
+"${PT[@]}" cleanup add --what 'still open at stop time' --owner sessionA >/dev/null
+printf '\n#observation unregistered entry with no canonical identity\n' >> journal.md
 if ! printf '{}' | CLAUDE_PROJECT_DIR="$PWD" \
-    bash .claude/hooks/engagement-doctor.sh >"$TMP/current-hook.out" 2>&1; then
-    cat "$TMP/current-hook.out" >&2
-    fail "Stop hook should pass with valid registry and current handoff"
+    bash .claude/hooks/engagement-doctor.sh >"$TMP/stop-hook.out" 2>&1; then
+    cat "$TMP/stop-hook.out" >&2
+    fail "Stop hook must not block a session on engagement-global state"
 fi
-pass "Stop hook enforces a current structured handoff"
+grep -q 'cleanup obligation(s) still open' "$TMP/stop-hook.out" || \
+    fail "Stop hook should still report open cleanup obligations"
+grep -q '#observation entries without O/F reference' "$TMP/stop-hook.out" || \
+    fail "Stop hook should still report unregistered journal observations"
+pass "Stop hook reports drift on stderr without blocking a concurrent session"
+
+# --- Boot context stays bounded and complete --------------------------------
+boot="$("${PT[@]}" context boot)"
+grep -q 'INCOMPLETE BOOT' <<<"$boot" && \
+    fail "a DB-derived boot section no longer fits its budget and is cut silently"
+grep -q 'Register everything, conclude nothing' <<<"$boot" && \
+    fail "boot must not inline natively loaded AGENTS.md"
+grep -q 'Sessions are independent' <<<"$boot" || \
+    fail "boot policy should state that sessions run concurrently"
+pass "boot stays DB-derived and complete"
 
 echo "All context router tests passed."

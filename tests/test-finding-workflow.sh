@@ -116,12 +116,22 @@ if "${PT[@]}" finding attach F01 --observation O0002 >"$TMP/no-evidence.out" 2>&
 fi
 grep -q 'no registered evidence' "$TMP/no-evidence.out" || \
     fail "missing-evidence rejection should explain how to fix it"
-if printf '{}' | CLAUDE_PROJECT_DIR="$PWD" \
+if ! printf '{}' | CLAUDE_PROJECT_DIR="$PWD" \
     bash .claude/hooks/engagement-doctor.sh >"$TMP/new-observation-hook.out" 2>&1; then
-    fail "Stop hook should block an observation that was captured but never triaged"
+    cat "$TMP/new-observation-hook.out" >&2
+    fail "Stop hook must not block on an observation awaiting operator review"
 fi
-grep -q 'state=new' "$TMP/new-observation-hook.out" || \
-    fail "Stop hook should identify the untriaged observation"
+# A proposed observation is a queue entry, never drift: the hook hands it over,
+# and doctor must not call it a warning.
+grep -q 'Operator review queue' "$TMP/new-observation-hook.out" || \
+    fail "Stop hook should hand over the operator review queue"
+grep -q 'O0002' "$TMP/new-observation-hook.out" || \
+    fail "Stop hook should name the queued observation"
+grep -qi 'WARN.*O0002' "$TMP/new-observation-hook.out" && \
+    fail "an observation awaiting review must not be reported as a warning"
+"${PT[@]}" doctor >"$TMP/queue-doctor.out" 2>&1 || true
+grep -q 'NOTE: 1 observation(s) awaiting operator review' "$TMP/queue-doctor.out" || \
+    fail "doctor should report the review queue as a notice, not a warning"
 
 "${PT[@]}" observation evidence O0002 \
     --evidence scans/customer-portal/burp/req-1900.http >/dev/null
@@ -132,9 +142,9 @@ grep -q 'state=new' "$TMP/new-observation-hook.out" || \
     fail "second occurrence was not grouped under F01"
 grep -q 'O0001.*,.*O0002' findings/cross-tenant-order-access.md || \
     fail "write-up does not list both occurrences"
-if "${PT[@]}" observation state O0002 rejected --reason 'late override' \
+if "${PT[@]}" observation state O0002 dismissed --reason 'late override' \
     >"$TMP/linked-state.out" 2>&1; then
-    fail "a linked observation should not be rejectable behind its finding"
+    fail "an accepted observation should not be dismissable behind its finding"
 fi
 grep -q 'state is managed by that canonical link' "$TMP/linked-state.out" || \
     fail "linked-state rejection should explain the invariant"
@@ -274,39 +284,102 @@ if ! doctor_out="$("${PT[@]}" doctor --strict 2>&1)"; then
 fi
 pass "merge consolidates findings without deleting audit history"
 
+# An observation nobody has ruled on is normal session residue, not a defect:
+# it must survive the reporting-freeze gate untouched.
+printf 'GET /api/profile/9 HTTP/1.1\nHost: portal.example.test\n' \
+    > scans/customer-portal/burp/req-2200.http
+"${PT[@]}" observation add \
+    --title 'Profile object reachable cross-tenant' \
+    --family BOLA --segment customer-portal --asset A1 \
+    --component profile-api \
+    --from-http scans/customer-portal/burp/req-2200.http \
+    --source 'Burp Repeater item 2200' >"$TMP/from-http.out" || \
+    fail "--from-http capture failed"
+grep -q 'state=proposed confidence=suspected' "$TMP/from-http.out" || \
+    fail "a captured observation should start proposed and merely suspected"
+[ "$(sqlite3 db/engagement.db \
+    "SELECT method || ' ' || route FROM observation WHERE id=5;")" = 'GET /api/profile/:id' ] || \
+    fail "--from-http did not derive the method and normalized route"
+[ "$(sqlite3 db/engagement.db \
+    "SELECT kind FROM evidence WHERE observation_id=5;")" = 'http-request' ] || \
+    fail "--from-http did not register the request as http-request evidence"
+if ! doctor_out="$("${PT[@]}" doctor --strict 2>&1)"; then
+    echo "$doctor_out" >&2
+    fail "--strict must not fail because the operator review queue is not empty"
+fi
+grep -q 'awaiting operator review' <<<"$doctor_out" || \
+    fail "doctor should still surface the queue as a notice under --strict"
+"${PT[@]}" inbox >"$TMP/inbox.out" || fail "inbox failed"
+grep -q 'O0005' "$TMP/inbox.out" || fail "inbox omitted the queued observation"
+
+# Dismissal is a decision and always carries its reason; the reason then comes
+# back at the moment someone re-captures the same thing.
+if "${PT[@]}" observation state O0005 dismissed >"$TMP/no-reason.out" 2>&1; then
+    fail "an observation should not be dismissable without a reason"
+fi
+grep -q 'reason is required' "$TMP/no-reason.out" || \
+    fail "dismissal without a reason should explain itself"
+"${PT[@]}" observation state O0005 dismissed --reason 'same-tenant object, not cross-tenant' \
+    --by operator >/dev/null || fail "dismissal failed"
+"${PT[@]}" observation add \
+    --title 'Profile object reachable cross-tenant' \
+    --family BOLA --segment customer-portal --asset A1 \
+    --component profile-api \
+    --from-http scans/customer-portal/burp/req-2200.http \
+    --source 'second session, same idea' >"$TMP/recapture.out"
+grep -q 'dismissed: same-tenant object' "$TMP/recapture.out" || \
+    fail "re-capturing a dismissed issue must say why it was dismissed"
+if "${PT[@]}" finding create --slug dismissed-profile --group-key 'profile-api|x|y' \
+    --title 'Should not promote' --severity LOW --segment customer-portal \
+    --observation O0005 >"$TMP/promote-dismissed.out" 2>&1; then
+    fail "a dismissed observation should not be promotable"
+fi
+grep -q 'was dismissed; reopen it' "$TMP/promote-dismissed.out" || \
+    fail "promotion of a dismissed observation should explain the reopen path"
+"${PT[@]}" observation list --state dismissed >"$TMP/list-dismissed.out"
+grep -q 'same-tenant object' "$TMP/list-dismissed.out" || \
+    fail "observation list must read dismissal reasons back"
+"${PT[@]}" inbox --quiet >"$TMP/inbox-empty.out"
+[ -s "$TMP/inbox-empty.out" ] && fail "inbox --quiet should stay silent on an empty queue"
+pass "capture is cheap, dismissal carries its reason, and the queue never blocks"
+
 # Journal observations cannot become an untracked shadow registry.
 printf '## 2026-07-24\n#observation @portal cross-tenant data returned\n' \
     > journal.md
-if printf '{}' | CLAUDE_PROJECT_DIR="$PWD" \
+# The Stop hook reports; it never blocks, so a concurrent session is not held
+# hostage by engagement-global state it did not create.
+if ! printf '{}' | CLAUDE_PROJECT_DIR="$PWD" \
     bash .claude/hooks/engagement-doctor.sh >"$TMP/journal-hook.out" 2>&1; then
-    fail "Stop hook should block a journal observation with no O/F identity"
+    cat "$TMP/journal-hook.out" >&2
+    fail "Stop hook must not block on a journal observation with no O/F identity"
 fi
 grep -q '#observation entries without O/F reference' "$TMP/journal-hook.out" || \
-    fail "Stop hook did not explain the unregistered journal observation"
+    fail "Stop hook did not report the unregistered journal observation"
 sed -i 's/#observation /#observation F01 /' journal.md
-"${PT[@]}" session close \
-    --focus 'consolidated authorization findings' \
-    --outcome captured \
-    --completed 'linked the journal observation to F01' \
-    --next 'continue authorization coverage' \
-    --reference F01 >/dev/null
 if ! printf '{}' | CLAUDE_PROJECT_DIR="$PWD" \
     bash .claude/hooks/engagement-doctor.sh >"$TMP/clean-hook.out" 2>&1; then
     cat "$TMP/clean-hook.out" >&2
-    fail "Stop hook should pass after the journal observation is canonical"
+    fail "Stop hook should stay silent-and-clean once the entry is canonical"
 fi
+grep -q '#observation entries without O/F reference' "$TMP/clean-hook.out" && \
+    fail "Stop hook still reports a journal entry that is now canonical"
 
-# Evidence mutation is a hard error and the Stop hook blocks the handoff.
+# Evidence mutation is a hard doctor error, surfaced (not enforced) at stop time
+# and blocking at the reporting-freeze gate.
 printf '\nmodified after capture\n' >> scans/customer-portal/burp/res-1842.http
 if "${PT[@]}" doctor >"$TMP/checksum.out" 2>&1; then
     fail "doctor should fail after registered evidence changes"
 fi
 grep -q 'checksum drift' "$TMP/checksum.out" || fail "checksum drift not reported"
-if printf '{}' | CLAUDE_PROJECT_DIR="$PWD" \
-    bash .claude/hooks/engagement-doctor.sh >"$TMP/hook.out" 2>&1; then
-    fail "Stop hook should block a structurally inconsistent engagement"
+if "${PT[@]}" doctor --strict >/dev/null 2>&1; then
+    fail "doctor --strict should fail on evidence checksum drift"
 fi
-grep -q 'checksum drift' "$TMP/hook.out" || fail "Stop hook hid the blocking reason"
-pass "immutable evidence and Stop hook prevent silent handoff drift"
+if ! printf '{}' | CLAUDE_PROJECT_DIR="$PWD" \
+    bash .claude/hooks/engagement-doctor.sh >"$TMP/hook.out" 2>&1; then
+    cat "$TMP/hook.out" >&2
+    fail "Stop hook must report drift without blocking the session"
+fi
+grep -q 'checksum drift' "$TMP/hook.out" || fail "Stop hook hid the evidence drift"
+pass "immutable evidence drift is reported at stop time and blocks --strict"
 
 echo "All finding workflow tests passed."

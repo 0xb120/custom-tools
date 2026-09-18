@@ -3,7 +3,8 @@
 #   - every active finding must have >=1 evidence of kind 'http-request' whose file
 #     contains a valid HTTP request line (^METHOD path HTTP/x.y),
 #   - unless the write-up carries an opt-out marker <!-- no-http-request: reason -->.
-# Warning in plain doctor, blocking under --hook (Stop hook), fatal under --strict.
+# Warning in plain doctor (the Stop hook reports it without blocking), fatal under
+# --strict, the reporting-freeze gate.
 # Uses bare `python3` (project convention); run with a real python3 on PATH.
 set -eo pipefail
 
@@ -56,16 +57,20 @@ printf 'just some notes, no request line\n' > scans/web/bad.http
     --observation O0001 >/dev/null || fail "finding create failed"
 set_refs findings/xss.md
 
-# --- Test 1: no http-request evidence → warn (plain), block (--hook), fatal (--strict) ---
+# --- Test 1: no http-request evidence → warn (plain), fatal (--strict) ---
 out="$("${PT[@]}" doctor 2>&1)" || fail "plain doctor must stay non-blocking (exit 0)"
 echo "$out" | grep -q 'HTTP request evidence' \
     || fail "plain doctor should warn that the finding has no HTTP request evidence"
 pass "plain doctor warns (non-blocking) when a finding has no HTTP request evidence"
 
-if "${PT[@]}" doctor --hook --quiet >/dev/null 2>&1; then
-    fail "doctor --hook (Stop hook) must block when a finding has no HTTP request"
+if printf '{}' | CLAUDE_PROJECT_DIR="$PWD" \
+    bash .claude/hooks/engagement-doctor.sh >"$TMP/stop.out" 2>&1; then
+    grep -q 'HTTP request evidence' "$TMP/stop.out" \
+        || fail "Stop hook should report the missing HTTP request"
+else
+    fail "Stop hook must report the missing HTTP request without blocking"
 fi
-pass "doctor --hook blocks the stop when a finding has no HTTP request"
+pass "Stop hook reports a missing HTTP request without blocking the session"
 
 if "${PT[@]}" doctor --strict >/dev/null 2>&1; then
     fail "doctor --strict must fail when a finding has no HTTP request"
@@ -77,8 +82,6 @@ pass "doctor --strict fails when a finding has no HTTP request"
     >/dev/null || fail "could not register http-request evidence"
 "${PT[@]}" doctor --strict >/dev/null 2>&1 \
     || fail "doctor --strict should pass once a complete http-request is registered"
-"${PT[@]}" doctor --hook --quiet >/dev/null 2>&1 \
-    || fail "doctor --hook should not block once a complete http-request is registered"
 pass "a registered http-request with a valid request line satisfies the rule"
 
 # --- Test 3: an http-request file without a request line is flagged as incomplete ---

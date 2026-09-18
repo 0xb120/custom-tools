@@ -87,6 +87,32 @@ echo "$out_by_name"  | grep -q "10.0.0.5"         || fail "dossier-by-name shoul
 echo "$out_by_oldip" | grep -q "DC01"             || fail "dossier resolved by an OLD ip should still find DC01"
 pass "host-dossier resolves by name and by historical IP, shows IP history + assets"
 
+# "What do we know about this machine" has to include the knowledge that never
+# became a finding: what was ruled out and why, and what was actually tried.
+sqlite3 "$db" "
+  INSERT INTO observation
+    (fingerprint, state, confidence, family, title, segment_id, asset_id,
+     component, disposition)
+  VALUES ('fp-dismissed', 'dismissed', 'suspected', 'smb-signing',
+          'SMB signing not required', 1, 1, 'smb',
+          'compensating control: segment is isolated');
+  INSERT INTO observation
+    (fingerprint, state, confidence, family, title, segment_id, asset_id, component)
+  VALUES ('fp-queued', 'proposed', 'reproduced', 'auth', 'Null session allowed',
+          1, 1, 'smb');
+  INSERT INTO coverage (asset_id, segment_id, test_class, note, owner)
+  VALUES (1, 1, 'relay', 'ntlmrelayx against 445 for 20 min, no coerced auth', 'sessionA');"
+out_knowledge="$(sqlite3 "$db" ".param set :host 'DC01'" ".read $DOSSIER")"
+echo "$out_knowledge" | grep -q 'SMB signing not required' || \
+    fail "dossier should surface an observation that never became a finding"
+echo "$out_knowledge" | grep -q 'compensating control' || \
+    fail "dossier should surface WHY an observation was dismissed"
+echo "$out_knowledge" | grep -q 'Null session allowed' || \
+    fail "dossier should surface the observation still awaiting a decision"
+echo "$out_knowledge" | grep -q 'ntlmrelayx against 445' || \
+    fail "dossier should surface what was tried against the machine"
+pass "host-dossier carries dismissals, their reasons, and recorded attempts"
+
 # Recycled IP: 10.0.0.5 is retired on DC01 but later becomes PC02's CURRENT
 # lease — a constraint-legal DHCP reuse (idx_host_ip_one_owner only forbids two
 # CURRENT owners). Querying that IP is ambiguous, so the dossier intentionally

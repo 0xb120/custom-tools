@@ -181,16 +181,31 @@ END;
 
 -- ---------------------------------------------------------------------------
 -- Observations: one row per concrete test case / occurrence. An observation is
--- captured immediately, before deciding whether it deserves a report finding.
+-- captured immediately, before anyone decides whether it belongs in the report.
 -- Exact duplicate test cases collapse on `fingerprint`; several observations
 -- can then be grouped under one finding through finding_observation.
+--
+-- `state` records WHO DECIDED WHAT, never how sure the agent feels:
+--
+--   proposed   an agent captured it; nobody has ruled on it yet (the default,
+--              and the only state an agent reaches on its own)
+--   accepted   promoted into a report finding — set exclusively by
+--              `ptctl.py finding create` / `finding attach`
+--   dismissed  ruled out, with the reason in `disposition`
+--
+-- An agent cannot truthfully declare an exploration finished, so it is never
+-- asked to: `proposed` is a queue for the operator, not a defect to clear.
+-- `confidence` carries what the agent CAN state as fact — whether it actually
+-- reproduced the behaviour or is only reporting a suspicion — and `decided_by`
+-- keeps an agent's own dismissal distinguishable from an operator's.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS observation (
   id             INTEGER PRIMARY KEY,
   fingerprint    TEXT NOT NULL UNIQUE,
-  state          TEXT NOT NULL DEFAULT 'new'
-                   CHECK (state IN ('new','validating','confirmed','linked',
-                                    'rejected','inconclusive','duplicate')),
+  state          TEXT NOT NULL DEFAULT 'proposed'
+                   CHECK (state IN ('proposed','accepted','dismissed')),
+  confidence     TEXT NOT NULL DEFAULT 'suspected'
+                   CHECK (confidence IN ('suspected','reproduced')),
   family         TEXT NOT NULL,             -- BOLA / XSS / authn / business-logic / ...
   title          TEXT NOT NULL,
   segment_id     INTEGER NOT NULL REFERENCES segment(id),
@@ -204,7 +219,8 @@ CREATE TABLE IF NOT EXISTS observation (
   target_role    TEXT,
   source         TEXT,                      -- Burp item, scanner result, journal note, manual test
   notes          TEXT,
-  disposition    TEXT,                      -- why rejected/merged/inconclusive
+  disposition    TEXT,                      -- why it was dismissed
+  decided_by     TEXT,                      -- who accepted/dismissed it (operator or agent)
   discovered_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -244,3 +260,60 @@ CREATE TABLE IF NOT EXISTS evidence (
 );
 
 CREATE INDEX IF NOT EXISTS idx_evidence_observation ON evidence(observation_id);
+
+-- ---------------------------------------------------------------------------
+-- Cleanup register: what testing left behind on the target and still owes the
+-- client — a created account, a dropped webshell, a changed configuration, a
+-- locked user. The registry cannot reconstruct this: it describes state
+-- OUTSIDE the workspace, which no query over db/ + scans/ can rediscover.
+--
+-- One row, one obligation, resolved with a single UPDATE. Nothing here is a
+-- shared baseline, so concurrent agent sessions append without conflicting.
+-- `ptctl.py doctor` warns while rows are open; `doctor --strict` (the
+-- pre-report gate) fails, so an engagement cannot be packaged dirty.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS cleanup (
+  id          INTEGER PRIMARY KEY,
+  what        TEXT NOT NULL,             -- "created user pentest_tmp"
+  location    TEXT,                      -- host, URL, or free-text location
+  asset_id    INTEGER REFERENCES asset(id) ON DELETE SET NULL,
+  owner       TEXT,                      -- which agent/operator created it
+  note        TEXT,
+  state       TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','done')),
+  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  resolved_at DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_cleanup_state ON cleanup(state);
+
+-- ---------------------------------------------------------------------------
+-- Attempt log: what was actually tried, INCLUDING the tries that found nothing.
+-- The observation and finding tables only record what was found, so without
+-- this the fact that cross-tenant write and delete were tested and came back
+-- 403 survives nowhere — and the next session re-tests it, or skips it, with no
+-- way to tell which.
+--
+-- There is deliberately NO verdict column. "I tested BOLA on A1 and there is
+-- nothing there" is a claim about the completeness of an exploration that has
+-- no natural end, and nobody — agent or human — can make it truthfully. What
+-- CAN be stated is the attempt itself, so `note` is mandatory and carries it:
+-- "cross-tenant read/write/delete all 403 for customer/customer". A reader
+-- judges sufficiency from that sentence; the table never asserts it.
+--
+-- Append-only, so any number of concurrent sessions record attempts against the
+-- same target with no shared row to overwrite and no attempt history erased.
+-- `test_class` uses the same normalized vocabulary as observation.family.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS coverage (
+  id          INTEGER PRIMARY KEY,
+  asset_id    INTEGER REFERENCES asset(id) ON DELETE CASCADE,
+  segment_id  INTEGER REFERENCES segment(id) ON DELETE SET NULL,
+  test_class  TEXT NOT NULL,             -- bola / xss / auth / … (normalized)
+  note        TEXT NOT NULL,             -- what was actually tried, in words
+  owner       TEXT,
+  recorded_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CHECK (asset_id IS NOT NULL OR segment_id IS NOT NULL)
+);
+
+CREATE INDEX IF NOT EXISTS idx_coverage_asset ON coverage(asset_id);
+CREATE INDEX IF NOT EXISTS idx_coverage_class ON coverage(test_class);

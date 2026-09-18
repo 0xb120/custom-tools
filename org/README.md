@@ -79,13 +79,10 @@ The important generated paths are:
 ├── wl/                       # discovered identities/secrets; keep private
 ├── db/
 │   ├── engagement.db         # canonical structured engagement state
-│   ├── ptctl.py              # observation, finding, context, and session CLI
+│   ├── ptctl.py              # observation, finding, context, cleanup, coverage CLI
 │   ├── render.sh
 │   ├── whatweknow.sh
 │   └── queries/
-├── .context/
-│   ├── handoff.md            # compact cross-session handoff
-│   └── state.json            # artifact and registry baseline; no evidence bodies
 ├── .claude/                  # Claude hooks and engagement settings
 ├── .codex/                   # Codex hooks and engagement settings
 ├── .devcontainer/
@@ -126,7 +123,7 @@ devcontainer exec --workspace-folder . claude
 
 ## Progressive context
 
-Session bootstrap is intentionally bounded. It contains the hard rules (bridged for Claude, native for Codex), compact scope, the latest handoff, canonical counts, and a limited number of open task titles. It excludes historical journal prose, completed TODO history, finding prose, evidence bodies, scans, and the full board.
+Session bootstrap is intentionally bounded. It contains engagement identity, compact scope, open cleanup obligations, canonical counts, and a limited number of open task titles. It excludes historical journal prose, completed TODO history, finding prose, evidence bodies, scans, the coverage ledger, and the full board. It also excludes the hard rules themselves: both clients discover `AGENTS.md` natively (Codex reads it, Claude Code hardcodes `CLAUDE.md` / `AGENTS.md` discovery), so inlining it here put the same ~11 KB in context twice, re-paid on every resume and compact.
 
 Load more context deliberately:
 
@@ -146,6 +143,9 @@ python3 db/ptctl.py context history --topic 'orders authorization'
 # Resume one known observation or finding; evidence files are listed, not inlined.
 python3 db/ptctl.py context resume O0001
 python3 db/ptctl.py context resume F01
+
+# Surface unexplored attack surface instead of a backlog to close.
+python3 db/ptctl.py coverage gaps
 ```
 
 ## Canonical observations and findings
@@ -156,23 +156,34 @@ The control plane separates unvalidated leads, concrete observations, and report
 |---|---|---|
 | Lead | Tool-native file under `scans/<segment>/` | Candidate that has not been validated |
 | Observation | `O####` in `db/engagement.db` | One concrete occurrence/test case with registered evidence |
-| Finding | `F##` plus `findings/<slug>.md` | One report issue grouping related observations |
+| Finding | `F##` plus `findings/<slug>.md` | One report issue the operator accepted |
 
-Register an observation as soon as manual work relies on a plausible issue:
+An agent captures observations; an operator decides which become findings. That split is the point of the layer: `state` records who decided what (`proposed` → `accepted`/`dismissed`), and an agent reaches only `proposed` on its own. How sure the agent is lives in a separate `confidence` field (`suspected` / `reproduced`), never in the lifecycle, so nothing ever asks a model to declare an open-ended exploration finished — `proposed` is the operator's review queue, not drift to clear.
+
+Register an observation as soon as work relies on a plausible issue:
 
 ```bash
 python3 db/ptctl.py observation add \
   --title 'Cross-tenant read through orderId' \
   --family BOLA --segment customer-portal --asset A1 \
   --component orders-api --boundary cross-tenant \
-  --method GET --route '/api/orders/:id' --selector orderId \
   --attacker-role customer --target-role customer \
-  --source 'Burp Repeater item 1842' \
-  --evidence scans/customer-portal/burp/req-1842.http \
+  --confidence reproduced \
+  --from-http scans/customer-portal/burp/req-1842.http \
   --evidence scans/customer-portal/burp/res-1842.http
 ```
 
-Promote a confirmed observation with registered evidence:
+`--from-http` reads the saved request for `--method`, `--route` and `--selector` and registers it as the mandatory `http-request` evidence, so capturing before moving on costs one flag instead of six.
+
+Read the registry back, dismissals included — the reason something was ruled out is what keeps the next session from redoing it:
+
+```bash
+python3 db/ptctl.py inbox                          # awaiting an operator decision
+python3 db/ptctl.py observation list --state dismissed
+python3 db/ptctl.py observation state O0006 dismissed --reason 'scanner false positive'
+```
+
+Promote an observation into a report finding (this is what sets `accepted`):
 
 ```bash
 python3 db/ptctl.py finding create \
@@ -189,49 +200,52 @@ Useful checks:
 
 ```bash
 python3 db/ptctl.py board
+python3 db/ptctl.py inbox
 python3 db/ptctl.py doctor
 python3 db/ptctl.py doctor --strict
 bash db/whatweknow.sh <host-or-ip>
 ```
 
-## Session handoff and capture gate
+`doctor` reports only defects in the deliverable — drift, altered evidence, open cleanup obligations. An untriaged review queue is not one of those and is reported as a `NOTE` that never fails, including under `--strict`. `whatweknow.sh <host>` folds in the observations that never became findings (with the reason each was dismissed) and every attempt recorded against the machine.
 
-The SessionStart hooks open an active marker. Before ending meaningful work, inspect changes and write one explicit outcome:
+## Concurrent sessions
+
+Several Claude/Codex sessions can work one engagement at the same time. There is no session marker, no shared baseline file, and no handoff document: `db/engagement.db` is the only state shared between them. It runs in WAL mode with `BEGIN IMMEDIATE` writes and a 10s busy timeout, so concurrent writers serialize rather than lose each other's work, and observation fingerprints are idempotent, so two sessions capturing the same issue converge on one `O####`.
+
+The single-tenant `.context/` layer that used to sit here (`handoff.md`, `state.json`, `active.json`) was removed because it was unsound under exactly this condition: one global active marker meant a second session never opened its own gate, and the first session to close rewrote the global baseline, absorbing every other session's in-flight artifacts and silently releasing their capture gate. What it enforced, it enforced only for a single agent.
+
+Two things it held could not be reconstructed from the registry, so they became tables instead.
+
+### Cleanup register — what testing left on the target
 
 ```bash
-python3 db/ptctl.py session delta
-
-# Canonical security state was captured or updated.
-python3 db/ptctl.py session close \
-  --focus 'orders authorization' \
-  --outcome captured --reference F01
-
-# Testing produced a negative result.
-python3 db/ptctl.py session close \
-  --focus 'orders authorization' \
-  --outcome no-finding \
-  --assessment 'cross-tenant read/write/delete returned 403'
-
-# File-only maintenance.
-python3 db/ptctl.py session close \
-  --focus 'artifact cleanup' \
-  --outcome administrative \
-  --assessment 'renamed imported client documentation'
+python3 db/ptctl.py cleanup add --what 'created user pentest_tmp' --asset A1 --owner claude
+python3 db/ptctl.py cleanup list
+python3 db/ptctl.py cleanup done C01 --note 'removed, confirmed gone'
 ```
 
-Changes under `scans/` or `poc/` activate the capture gate. A `captured` outcome must reference an observation/finding changed during the current session; an old unchanged reference cannot account for new output. `no-finding`, `mixed`, and `administrative` outcomes require an assessment.
+Open obligations load into every session's bootstrap, `doctor` warns while any remain, and `doctor --strict` fails. This is state on the client's systems, so no query over `db/` or `scans/` can rediscover it.
 
-The Stop hook runs `doctor` and `session check`. It blocks an agent from ending with canonical drift, untriaged observations, a stale handoff, or an active session without a closing outcome.
+### Attempt log — what was tried, tries that found nothing included
+
+```bash
+python3 db/ptctl.py coverage add --asset A1 --class bola \
+  --note 'cross-tenant read/write/delete all returned 403'
+python3 db/ptctl.py coverage list --segment customer-portal
+python3 db/ptctl.py coverage gaps
+```
+
+There is no verdict field: "this class is clean here" is a claim about a search with no natural end, so the ledger records the attempt and lets the reader judge it. `--note` is therefore mandatory. `--class` normalizes through the same alias table as `observation --family`. The table is append-only and nothing supersedes anything, so concurrent sessions never race on a read-modify-write and every attempt survives. `coverage gaps` reports assets nobody has recorded work against, plus assets missing a class that was exercised elsewhere — the vocabulary is the engagement's own, so there is no taxonomy to maintain.
 
 ## Lifecycle hooks
 
 | Event | Claude | Codex |
 |---|---|---|
-| Session start | Opens the session and loads bounded context including `AGENTS.md` | Opens the session and loads bounded context; Codex reads `AGENTS.md` natively |
+| Session start | Loads bounded context including `AGENTS.md` | Loads bounded context; Codex reads `AGENTS.md` natively |
 | Shell command | Writes the git-ignored command audit log | Same shared hook |
 | DB write | Re-renders Markdown views | Same shared hook |
 | Report edit | Checks report prose, code-fence and indentation formatting | Claude-only |
-| Stop | Runs the engagement doctor and handoff check | Same shared hook |
+| Stop | Reports engagement drift on stderr; never blocks | Same shared hook |
 
 Shared scripts live in `templates/hooks/`. Claude-only hooks live in `templates/claude/hooks/`.
 
