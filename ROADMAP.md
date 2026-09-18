@@ -135,6 +135,34 @@ Status legend: `idea` (needs design) · `ready` (design agreed, can build) · `i
 
 ---
 
+## 8. Single-tenant session layer removed — ✅ done (see § Done)
+
+**Status:** `done` · **Size:** M · **Area:** `org/templates/`, `org/newPT.sh`, `tests/`
+
+**Motivation.** Item 4's capture gate assumed exactly one agent per engagement. With two sessions open, the second never opened its own marker (`.context/active.json` is global), and the first to close rewrote the global baseline (`.context/state.json`), absorbing the other's in-flight artifacts and silently reporting `Capture gate: not required` for work nobody had accounted for. `handoff.md` was last-writer-wins on top of that, and the Stop hook's `doctor`/`session check` blocked each session on the others' work in progress.
+
+**Shipped.** `.context/` and the whole `session` command group are gone. What the handoff held that the registry cannot reconstruct moved into two DB tables — `cleanup` (what testing left on the target) and `coverage` (what was actually tried, tries that found nothing included) — both INSERT-only or single-row updates, so concurrent sessions never contend. The Stop hook reports instead of blocking; `doctor --strict` is the gate that still fails, at reporting freeze. Bridged hard rules also stopped being silently truncated: the boot budget was 18000 chars with a 12000-char rules cap, and any clipped section is announced in an `INCOMPLETE BOOT` block. (The bridge itself is gone as of item 10; the truncation warning stays.)
+
+## 9. Registry vocabulary: record facts, decide nothing — ✅ done
+
+**Status:** `done` · **Size:** L · **Area:** `org/templates/db/`, `org/templates/AGENTS.md`, `org/templates/PT_PLAYBOOK.md`, `tests/`
+
+**Motivation.** The registry asked agents for two judgements they cannot make honestly. The seven-state observation lifecycle mixed *who decided what* (`linked`, `rejected`) with *how sure the agent was* (`new`, `validating`, `confirmed`, `inconclusive`), and `AGENTS.md` required every observation to be resolved before stopping — closure on an exploration that has no natural end, with an escape hatch (`or explicitly left in validating`) that made the rule ritual rather than enforcement. The coverage ledger asked for the same thing at asset level: `negative` and `partial` differed only by a completeness claim, and `positive` duplicated the observation registry. Both produced `doctor` warnings on entirely normal work in progress, and a check that fires on normal state is one everybody learns to ignore.
+
+**Shipped.** Observation `state` now records only who decided what — `proposed` → `accepted` (only via `finding create`/`finding attach`, so an agent never promotes its own work) or `dismissed` (reason mandatory). Agent confidence moved to its own `confidence` field (`suspected` / `reproduced`), and `decided_by` keeps an agent's dismissal distinguishable from an operator's. Coverage lost its verdict column and became an append-only attempt log with a mandatory note. Nothing asks an agent to conclude anything: `doctor` reports deliverable defects only and never fails on the queue, `ptctl.py inbox` is the operator's review queue, and the Stop hook hands it over instead of flagging it. Capture friction dropped with `observation add --from-http`, which derives method/route/selector from a saved request and registers it as the mandatory `http-request` evidence. Read paths caught up: `observation list` reads dismissals and their reasons back, and `whatweknow.sh` finally shows the observations and attempts that never became findings. Live engagement DBs migrate in place on the next `ptctl.py` call (`tests/test-registry-migration.sh` covers the mapping, the foreign keys and idempotency).
+
+## 10. Stop paying for AGENTS.md twice — ✅ done
+
+**Status:** `done` · **Size:** S · **Area:** `org/templates/`, `tests/`
+
+**Motivation.** Item 4 bridged `AGENTS.md` into the Claude bootstrap because only Codex read it natively. Claude Code has since made `CLAUDE.md` / `AGENTS.md` discovery native and hardcoded, so the bridge put the same ~11 KB of rules in context twice — roughly 3k tokens per session, re-paid on every `resume`, `clear`, and `compact`, since the `SessionStart` matcher is `*`. Measured on a fresh scaffold: boot was 12964 chars, of which 11805 were the duplicated rules.
+
+**Shipped.** `--include-rules` is removed from `context boot` / `context explain`; boot is now DB-derived only (identity, scope, open cleanup, counts, open task titles) and `DEFAULT_BOOT_CHARS` drops 18000 → 8000, which is what those sections actually need. Both SessionStart hooks call `context boot --max-chars 8000`. The same pass moved the `ptctl` capture syntax out of the always-on `AGENTS.md` into `PT_PLAYBOOK.md` § Capture recipes, leaving the obligation in the rules and the invocation on demand. Fresh-scaffold boot: 12964 → 1467 chars; `AGENTS.md`: 11805 → 11091 bytes.
+
+**Verified.** `claude -p` in a directory containing only an `AGENTS.md` (and again with a `CLAUDE.md` alongside it) obeys a rule stated exclusively in `AGENTS.md`, confirming native discovery on Claude Code 2.1.274.
+
+---
+
 ## Backlog — unscheduled ideas
 
 - **Codex report-format parity.** Adapt the Claude-only report prose check to Codex's `apply_patch`/Stop lifecycle without scanning unrelated Markdown.
@@ -173,7 +201,7 @@ Shipped a canonical control plane for the path from candidate evidence to report
 
 - **Observation registry** — idempotent `O####` capture with semantic fingerprints, state transitions, and immutable evidence hashes.
 - **Finding workflow** — atomic create/attach/update/asset/merge operations, semantic `group_key` deduplication, managed Markdown metadata/evidence blocks, and automatic findings-index rendering.
-- **Anti-drift doctor** — checks DB↔Markdown/index consistency, missing PoC/write-up paths, unmanaged finding files, modified evidence, and unresolved observation state.
+- **Anti-drift doctor** — checks DB↔Markdown/index consistency, missing PoC/write-up paths, unmanaged finding files, and modified evidence.
 - **Stop enforcement** — blocks on structural drift, transient observations, or `#observation` journal entries that do not reference an `O####`/`F##`.
 
 The progressive-context work in item 4 extends this shipped foundation with bounded retrieval and a session-level artifact capture gate.

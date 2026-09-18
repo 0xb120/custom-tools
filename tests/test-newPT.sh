@@ -238,25 +238,33 @@ python3 engagement-internal/db/ptctl.py --help | grep -q context || \
 test -f engagement-internal/PT_PLAYBOOK.md || fail "on-demand PT_PLAYBOOK.md missing"
 test -f engagement-internal/vulnerabilities/_template.md || \
     fail "managed vulnerability template missing"
-test -f engagement-internal/.context/handoff.md || fail "initial session handoff missing"
-test -f engagement-internal/.context/state.json || fail "initial session delta state missing"
-grep -qx 'active.json' engagement-internal/.context/.gitignore || \
-    fail "ephemeral active session marker should be git-ignored"
-jq -e '.version == 1 and .artifacts == {}' \
-    engagement-internal/.context/state.json >/dev/null || \
-    fail "initial session delta state is invalid"
+# No per-session state: sessions are independent and may run concurrently.
+test -e engagement-internal/.context && \
+    fail "scaffold must not create single-tenant .context/ session state"
+python3 engagement-internal/db/ptctl.py --help | grep -q cleanup || \
+    fail "db/ptctl.py help should expose the cleanup register"
+python3 engagement-internal/db/ptctl.py --help | grep -q coverage || \
+    fail "db/ptctl.py help should expose the coverage ledger"
+for table in cleanup coverage; do
+    sqlite3 engagement-internal/db/engagement.db \
+        "SELECT 1 FROM $table LIMIT 1;" >/dev/null 2>&1 || \
+        fail "schema.sql did not create the $table table"
+done
+grep -q 'Fill AGENTS.md, scope.txt' engagement-internal/TODO.md || \
+    fail "scaffold starting tasks belong in TODO.md"
 [ "$(wc -c < engagement-internal/AGENTS.md)" -lt 12000 ] || \
     fail "always-on AGENTS.md should remain below 12 KB"
-python3 engagement-internal/db/ptctl.py session check >/dev/null || \
-    fail "fresh scaffold handoff should be current"
 fresh_boot="$(python3 engagement-internal/db/ptctl.py context boot)"
-grep -q 'Freshness.*current' <<<"$fresh_boot" || \
-    fail "fresh scaffold boot should mark the handoff current"
-grep -q 'STALE' <<<"$fresh_boot" && \
-    fail "fresh scaffold boot should not report a stale handoff"
-python3 engagement-internal/db/ptctl.py session delta | \
-    grep -q 'Capture gate: not required' || \
-    fail "fresh scaffold should have no capture gate"
+grep -q 'Cleanup obligations still open' <<<"$fresh_boot" || \
+    fail "fresh scaffold boot should carry the cleanup section"
+grep -q 'None open' <<<"$fresh_boot" || \
+    fail "fresh scaffold should have no open cleanup obligation"
+grep -qi 'handoff' <<<"$fresh_boot" && \
+    fail "fresh scaffold boot should not mention a handoff"
+grep -q 'Register everything, conclude nothing' <<<"$fresh_boot" && \
+    fail "boot must not inline AGENTS.md: both clients load it natively"
+python3 engagement-internal/db/ptctl.py context boot --include-rules >/dev/null 2>&1 && \
+    fail "the removed --include-rules bridge should no longer be accepted"
 pass "transactional PT control plane and compact initial context scaffolded"
 
 # --- Test 5b: explicit 'kali' base flips BASE_IMAGE to kalilinux/kali-rolling ---
@@ -415,10 +423,12 @@ for h in log-command render-after-db engagement-doctor check-report-format; do
     test -x "engagement-internal/.claude/hooks/$h.sh" || \
         fail ".claude/hooks/$h.sh missing or not executable"
 done
-grep -q 'context boot --include-rules --max-chars 16000' engagement-internal/.claude/settings.json || \
-    fail "Claude SessionStart should bridge bounded hard rules"
-grep -q 'session start --client claude --quiet' engagement-internal/.claude/settings.json || \
-    fail "Claude SessionStart should open the capture gate"
+grep -q 'context boot --max-chars 8000' engagement-internal/.claude/settings.json || \
+    fail "Claude SessionStart should load the bounded DB-derived context"
+grep -q -- '--include-rules' engagement-internal/.claude/settings.json && \
+    fail "Claude SessionStart must not duplicate natively loaded AGENTS.md"
+grep -q 'session start' engagement-internal/.claude/settings.json && \
+    fail "Claude SessionStart must not open a single-tenant session marker"
 grep -q 'journal.md\\|ptctl.py board\\|cat /workspace/TODO.md' engagement-internal/.claude/settings.json && \
     fail "Claude SessionStart must not preload journal, full TODO, or board"
 jq -e '.hooks.Stop' engagement-internal/.claude/settings.json >/dev/null || \
@@ -439,10 +449,10 @@ jq -e '.hooks.SessionStart and .hooks.PreToolUse and .hooks.PostToolUse and .hoo
     fail ".codex/hooks.json must define SessionStart, PreToolUse, PostToolUse, Stop"
 grep -q 'check-report-format' engagement-internal/.codex/hooks.json && \
     fail ".codex/hooks.json must NOT reference the Claude-only report-format hook"
-grep -q 'context boot --max-chars 16000' engagement-internal/.codex/hooks.json || \
+grep -q 'context boot --max-chars 8000' engagement-internal/.codex/hooks.json || \
     fail "Codex SessionStart should load bounded context"
-grep -q 'session start --client codex --quiet' engagement-internal/.codex/hooks.json || \
-    fail "Codex SessionStart should open the capture gate"
+grep -q 'session start' engagement-internal/.codex/hooks.json && \
+    fail "Codex SessionStart must not open a single-tenant session marker"
 grep -q -- '--include-rules' engagement-internal/.codex/hooks.json && \
     fail "Codex SessionStart must not duplicate native AGENTS.md"
 grep -q 'journal.md\\|ptctl.py board\\|cat /workspace/TODO.md' engagement-internal/.codex/hooks.json && \

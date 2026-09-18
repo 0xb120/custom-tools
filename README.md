@@ -210,18 +210,20 @@ sudo bash org/install-offsec-tools.sh --groups=base,recon,AI /opt
 Each generated workspace contains:
 
 - `AGENTS.md` for small, always-on engagement boundaries and `PT_PLAYBOOK.md` for on-demand reference material;
-- `db/engagement.db` plus `db/ptctl.py`, the canonical observation/finding/evidence control plane;
-- `.context/handoff.md` and a content-based `scans/`/`poc/` delta baseline;
+- `db/engagement.db` plus `db/ptctl.py`, the canonical observation/finding/evidence control plane: agents capture observations, an operator accepts them into findings, and nothing asks an agent to declare an exploration finished;
+- a `cleanup` register for what testing left on the target and an attempt log for what was tried, tries that found nothing included — both in the DB, so concurrent sessions share them;
 - `.claude/` and `.codex/` hooks for bounded session bootstrap, command logging, DB rendering, and stop-time consistency checks;
 - a devcontainer, Claude/Codex launchers, and a pre-wired Burp MCP endpoint.
 
-At session start the hooks load compact scope, handoff, registry counts, and open task titles. Historical journal prose, finding prose, evidence bodies, and the full registry remain excluded until explicitly requested:
+At session start the hooks load compact scope, open cleanup obligations, registry counts, and open task titles. Historical journal prose, finding prose, evidence bodies, the attempt log, and the full registry remain excluded until explicitly requested. Several agent sessions can work one engagement at once: there is no per-session state file, and `db/engagement.db` is the only thing they share.
 
 ```bash
 python3 db/ptctl.py context focus --topic 'orders authorization'
 python3 db/ptctl.py context history --topic 'orders authorization'
 python3 db/ptctl.py context resume F01
-python3 db/ptctl.py session delta
+python3 db/ptctl.py inbox
+python3 db/ptctl.py coverage gaps
+python3 db/ptctl.py cleanup list
 ```
 
 ---

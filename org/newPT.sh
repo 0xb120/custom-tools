@@ -117,10 +117,11 @@ BASE_MARKETPLACES="trailofbits claude-plugins-official"
 # name to resolve and no per-type mapping, it is simply always on.
 #
 # Two of them carry a caveat worth knowing rather than rediscovering:
-# `remember` runs its own SessionStart/PostToolUse hooks alongside the
-# engagement's ptctl context hooks (both write session state — deliberate
-# duplication), and `miro` talks to a REMOTE MCP server at mcp.miro.com, so
-# whatever an engagement hands it leaves the container.
+# `remember` keeps its own per-session memory in SessionStart/PostToolUse
+# hooks — that memory is private to one session and invisible to the others,
+# so it must not become the place engagement state lives (db/engagement.db
+# is), and `miro` talks to a REMOTE MCP server at mcp.miro.com, so whatever
+# an engagement hands it leaves the container.
 BASE_PLUGINS="ask-questions-if-underspecified@trailofbits
 sharp-edges@trailofbits
 insecure-defaults@trailofbits
@@ -224,7 +225,6 @@ printf '*\n!.gitignore\n' > "$activity_name/logs/.gitignore"
 touch "$activity_name"/scope.txt
 touch "$activity_name"/out-of-scope.txt
 touch "$activity_name"/journal.md
-touch "$activity_name"/TODO.md
 
 # Activity notes / vulnerability report index — copy template and inject the activity name
 cp "$template_dir/activity.md" "$activity_name"/"$activity_name".md
@@ -390,28 +390,16 @@ sed -i "s|{{BURP_MCP_URL}}|$BURP_MCP_URL|g" \
     "$activity_name/.devcontainer/up.sh" \
     "$activity_name/.devcontainer/devcontainer.json"
 
-# Initialize the compact handoff last. Its mtime is the session-check baseline,
-# so it must be newer than the freshly created DB, TODO, journal, and report.
-mkdir -p "$activity_name/.context"
-cp "$template_dir/context/handoff.md" "$activity_name/.context/handoff.md"
-cp "$template_dir/context/state.json" "$activity_name/.context/state.json"
-cp "$template_dir/context/gitignore" "$activity_name/.context/.gitignore"
-(
-    cd "$activity_name"
-    python3 db/ptctl.py session close \
-        --focus 'Engagement initialization' \
-        --outcome administrative \
-        --assessment 'engagement scaffold initialization' \
-        --completed 'Engagement scaffold created' \
-        --blocker 'Scope and engagement placeholders may still need operator input' \
-        --next 'Fill AGENTS.md, scope.txt, and out-of-scope.txt from authorized kickoff material' \
-        --next 'Define segments in db/engagement.db' \
-        --reference AGENTS.md \
-        --reference scope.txt >/dev/null
-) || {
-    echo "ERROR: could not initialize the session delta baseline" >&2
-    exit 1
-}
+# The engagement carries no per-session state file. Everything shared between
+# sessions lives in db/engagement.db, which is WAL + BEGIN IMMEDIATE and takes
+# concurrent writers, so any number of Claude/Codex sessions can work the same
+# engagement at once. The scaffold's own starting tasks go where tasks belong.
+cat > "$activity_name/TODO.md" <<'TODOEOF'
+## Engagement-wide
+
+- [ ] Fill AGENTS.md, scope.txt, and out-of-scope.txt from authorized kickoff material
+- [ ] Define segments in db/engagement.db
+TODOEOF
 
 cat <<EOF
 
@@ -436,9 +424,13 @@ Next steps:
                                                # ...preview what that list installs; postCreate applies it in the container
   python3 db/ptctl.py context explain           # audit the small session bootstrap
   python3 db/ptctl.py context pending           # list all open work on demand
+  python3 db/ptctl.py inbox                     # observations the agents left for you to rule on
+  python3 db/ptctl.py coverage gaps             # assets nobody has recorded work against
+  python3 db/ptctl.py cleanup list              # what testing still owes the target
   python3 db/ptctl.py board                     # full canonical registry, on demand
   python3 db/ptctl.py vulnerability --help      # select/merge report vulnerabilities
   python3 db/ptctl.py doctor                    # check DB / Markdown / evidence drift
+  python3 db/ptctl.py doctor --strict           # pre-report gate (fails on open cleanup)
   ./yolo.sh                                    # one-shot: build/start container + Claude in YOLO mode (--dangerously-skip-permissions)
   ./yolo-codex.sh                              # same, but launches Codex (--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust)
   # ...or do it by hand:

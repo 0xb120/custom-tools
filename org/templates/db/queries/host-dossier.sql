@@ -135,3 +135,45 @@ ORDER BY CASE v.severity
             WHEN 'LOW'           THEN 4
             WHEN 'INFORMATIONAL' THEN 5
          END, v.id;
+-- The knowledge that never became a finding. A dossier that lists only findings
+-- answers "what did we report about this machine", not "what do we know about
+-- it": the dismissals (with the reason someone ruled them out) and the queue
+-- awaiting an operator are exactly what stops the next session from re-running
+-- work that has already been done and judged.
+.print ''
+.print '-- observations (incl. dismissed, with the reason) --'
+SELECT 'O' || printf('%04d', o.id) AS obs,
+       o.state                     AS state,
+       o.confidence                AS confidence,
+       o.family                    AS family,
+       COALESCE(o.component, '')   AS component,
+       COALESCE(o.route, '')       AS route,
+       o.title                     AS title,
+       COALESCE(o.disposition, '') AS dismissed_because
+FROM observation o
+WHERE o.asset_id IN (
+    SELECT a.id FROM asset a WHERE a.host_id IN (
+        SELECT id      FROM host    WHERE name = :host OR dns = :host
+        UNION
+        SELECT host_id FROM host_ip WHERE ip = :host
+    )
+)
+ORDER BY o.state, o.id;
+
+-- What was actually tried here, attempts that found nothing included. There is
+-- no verdict to report: the note is the record, and the reader judges it.
+.print ''
+.print '-- attempts recorded against this machine --'
+SELECT c.test_class          AS class,
+       c.recorded_at         AS recorded_at,
+       COALESCE(c.owner, '') AS owner,
+       c.note                AS tried
+FROM coverage c
+WHERE c.asset_id IN (
+    SELECT a.id FROM asset a WHERE a.host_id IN (
+        SELECT id      FROM host    WHERE name = :host OR dns = :host
+        UNION
+        SELECT host_id FROM host_ip WHERE ip = :host
+    )
+)
+ORDER BY c.test_class, c.id;

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -13,7 +14,6 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -21,25 +21,21 @@ from typing import Iterable
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parent
 DB_PATH = SCRIPT_DIR / "engagement.db"
-CONTEXT_DIR = ROOT / ".context"
-HANDOFF_PATH = CONTEXT_DIR / "handoff.md"
-SESSION_STATE_PATH = CONTEXT_DIR / "state.json"
-ACTIVE_SESSION_PATH = CONTEXT_DIR / "active.json"
-SESSION_STATE_VERSION = 1
-DEFAULT_BOOT_CHARS = 16000
+# Sized for the DB-derived sections only (identity, scope, cleanup, counts,
+# open task titles). The old 18000 existed to fit an inlined AGENTS.md, which
+# both clients now load natively.
+DEFAULT_BOOT_CHARS = 8000
 DEFAULT_DETAIL_CHARS = 24000
-SESSION_OUTCOMES = ("captured", "no-finding", "mixed", "administrative")
+CLEANUP_STATES = ("open", "done")
 SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL")
 STATUSES = ("open", "fixed", "non-reproducible")
-OBSERVATION_STATES = (
-    "new",
-    "validating",
-    "confirmed",
-    "linked",
-    "rejected",
-    "inconclusive",
-    "duplicate",
-)
+# Who decided what — never how sure the agent feels. `accepted` is reachable
+# only through `finding create` / `finding attach`, so an agent cannot promote
+# its own work into the report, and `proposed` is a review queue rather than a
+# defect: nothing asks an agent to declare an open-ended exploration finished.
+OBSERVATION_STATES = ("proposed", "accepted", "dismissed")
+# What the agent CAN state as fact about its own work.
+OBSERVATION_CONFIDENCE = ("suspected", "reproduced")
 ACTIVE_LIFECYCLES = ("draft", "confirmed")
 REQUIRED_MD_LABELS = (
     "Vuln_ID",
@@ -135,9 +131,10 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS observation (
           id             INTEGER PRIMARY KEY,
           fingerprint    TEXT NOT NULL UNIQUE,
-          state          TEXT NOT NULL DEFAULT 'new'
-                           CHECK (state IN ('new','validating','confirmed','linked',
-                                            'rejected','inconclusive','duplicate')),
+          state          TEXT NOT NULL DEFAULT 'proposed'
+                           CHECK (state IN ('proposed','accepted','dismissed')),
+          confidence     TEXT NOT NULL DEFAULT 'suspected'
+                           CHECK (confidence IN ('suspected','reproduced')),
           family         TEXT NOT NULL,
           title          TEXT NOT NULL,
           segment_id     INTEGER NOT NULL REFERENCES segment(id),
@@ -152,6 +149,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
           source         TEXT,
           notes          TEXT,
           disposition    TEXT,
+          decided_by     TEXT,
           discovered_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
@@ -237,6 +235,201 @@ def ensure_schema(con: sqlite3.Connection) -> None:
           SET evidence_path = 'vulnerabilities/' || NEW.slug || '.md'
           WHERE id = NEW.id;
         END;
+        CREATE TABLE IF NOT EXISTS cleanup (
+          id          INTEGER PRIMARY KEY,
+          what        TEXT NOT NULL,
+          location    TEXT,
+          asset_id    INTEGER REFERENCES asset(id) ON DELETE SET NULL,
+          owner       TEXT,
+          note        TEXT,
+          state       TEXT NOT NULL DEFAULT 'open'
+                        CHECK (state IN ('open','done')),
+          created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          resolved_at DATETIME
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_cleanup_state ON cleanup(state);
+
+        CREATE TABLE IF NOT EXISTS coverage (
+          id          INTEGER PRIMARY KEY,
+          asset_id    INTEGER REFERENCES asset(id) ON DELETE CASCADE,
+          segment_id  INTEGER REFERENCES segment(id) ON DELETE SET NULL,
+          test_class  TEXT NOT NULL,
+          note        TEXT NOT NULL,
+          owner       TEXT,
+          recorded_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CHECK (asset_id IS NOT NULL OR segment_id IS NOT NULL)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_coverage_asset ON coverage(asset_id);
+        CREATE INDEX IF NOT EXISTS idx_coverage_class ON coverage(test_class);
+        """
+    )
+    con.commit()
+    migrate_observation_vocabulary(con)
+    migrate_coverage_ledger(con)
+
+
+def table_sql(con: sqlite3.Connection, table: str) -> str:
+    row = con.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone()
+    return str(row["sql"]) if row and row["sql"] else ""
+
+
+def rebuild_table(con: sqlite3.Connection, table: str, create: str, copy: str) -> None:
+    """SQLite cannot drop a CHECK constraint, so a vocabulary change means
+    rebuilding the table (the documented 12-step ALTER procedure). Foreign keys
+    are off for the swap so that dropping the old table does not cascade into
+    evidence/finding_observation, and so the rename leaves other tables'
+    REFERENCES clauses pointing at the name rather than the temporary table."""
+    con.commit()
+    con.execute("PRAGMA foreign_keys=OFF")
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        con.executescript(create)
+        con.execute(copy)
+        con.execute(f"DROP TABLE {table}")
+        con.execute(f"ALTER TABLE {table}_migrated RENAME TO {table}")
+        con.commit()
+        violations = con.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise PTError(
+                f"{table} migration left {len(violations)} foreign key violation(s); "
+                "restore db/engagement.db from backup and report this"
+            )
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.execute("PRAGMA foreign_keys=ON")
+
+
+def migrate_observation_vocabulary(con: sqlite3.Connection) -> None:
+    """Collapse the old seven-state observation lifecycle onto the three states
+    that record who decided what.
+
+    new/validating/confirmed/inconclusive all meant "no human has ruled on this
+    yet" — they differed only by how sure the agent was, which now lives in
+    `confidence`. So they all become `proposed`, and nothing an agent wrote is
+    silently treated as closed. `linked` becomes `accepted`; `rejected` and
+    `duplicate` become `dismissed` and keep their reason. An `inconclusive`
+    reason describes an attempt rather than a decision, so it is folded into
+    `notes` where the operator still reads it."""
+    columns = table_columns(con, "observation")
+    if not columns or ("confidence" in columns and "decided_by" in columns):
+        return
+    create = """
+        CREATE TABLE observation_migrated (
+          id             INTEGER PRIMARY KEY,
+          fingerprint    TEXT NOT NULL UNIQUE,
+          state          TEXT NOT NULL DEFAULT 'proposed'
+                           CHECK (state IN ('proposed','accepted','dismissed')),
+          confidence     TEXT NOT NULL DEFAULT 'suspected'
+                           CHECK (confidence IN ('suspected','reproduced')),
+          family         TEXT NOT NULL,
+          title          TEXT NOT NULL,
+          segment_id     INTEGER NOT NULL REFERENCES segment(id),
+          asset_id       INTEGER REFERENCES asset(id),
+          component      TEXT,
+          boundary       TEXT,
+          method         TEXT,
+          route          TEXT,
+          selector       TEXT,
+          attacker_role  TEXT,
+          target_role    TEXT,
+          source         TEXT,
+          notes          TEXT,
+          disposition    TEXT,
+          decided_by     TEXT,
+          discovered_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+    """
+    copy = """
+        INSERT INTO observation_migrated
+          (id, fingerprint, state, confidence, family, title, segment_id,
+           asset_id, component, boundary, method, route, selector,
+           attacker_role, target_role, source, notes, disposition, decided_by,
+           discovered_at, updated_at)
+        SELECT id, fingerprint,
+               CASE state
+                 WHEN 'linked' THEN 'accepted'
+                 WHEN 'rejected' THEN 'dismissed'
+                 WHEN 'duplicate' THEN 'dismissed'
+                 ELSE 'proposed'
+               END,
+               CASE WHEN state IN ('confirmed','linked')
+                    THEN 'reproduced' ELSE 'suspected' END,
+               family, title, segment_id, asset_id, component, boundary, method,
+               route, selector, attacker_role, target_role, source,
+               CASE WHEN state='inconclusive' AND disposition IS NOT NULL
+                    THEN COALESCE(notes || ' | ', '')
+                         || 'previously inconclusive: ' || disposition
+                    ELSE notes END,
+               CASE WHEN state IN ('rejected','duplicate')
+                    THEN COALESCE(disposition, 'migrated from state=' || state)
+                    ELSE NULL END,
+               NULL,
+               discovered_at, updated_at
+        FROM observation
+    """
+    rebuild_table(con, "observation", create, copy)
+    con.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_observation_state   ON observation(state);
+        CREATE INDEX IF NOT EXISTS idx_observation_family  ON observation(family);
+        CREATE INDEX IF NOT EXISTS idx_observation_segment ON observation(segment_id);
+
+        CREATE TRIGGER IF NOT EXISTS observation_touch_updated_at
+        AFTER UPDATE ON observation
+        FOR EACH ROW
+        WHEN NEW.updated_at = OLD.updated_at
+        BEGIN
+          UPDATE observation SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+        END;
+        """
+    )
+    con.commit()
+
+
+def migrate_coverage_ledger(con: sqlite3.Connection) -> None:
+    """Drop the verdict column. `negative` vs `partial` differed only by a
+    completeness judgement nobody can make honestly, and `positive` duplicated
+    the observation registry. The attempt itself is the fact worth keeping, so
+    the old verdict is preserved inside the (now mandatory) note rather than
+    thrown away."""
+    columns = table_columns(con, "coverage")
+    if not columns or "verdict" not in columns:
+        return
+    create = """
+        CREATE TABLE coverage_migrated (
+          id          INTEGER PRIMARY KEY,
+          asset_id    INTEGER REFERENCES asset(id) ON DELETE CASCADE,
+          segment_id  INTEGER REFERENCES segment(id) ON DELETE SET NULL,
+          test_class  TEXT NOT NULL,
+          note        TEXT NOT NULL,
+          owner       TEXT,
+          recorded_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CHECK (asset_id IS NOT NULL OR segment_id IS NOT NULL)
+        );
+    """
+    copy = """
+        INSERT INTO coverage_migrated
+          (id, asset_id, segment_id, test_class, note, owner, recorded_at)
+        SELECT id, asset_id, segment_id, test_class,
+               CASE WHEN note IS NULL OR trim(note)=''
+                    THEN 'recorded as verdict=' || verdict
+                         || ' before the attempt log replaced verdicts'
+                    ELSE note || ' [was verdict=' || verdict || ']' END,
+               owner, recorded_at
+        FROM coverage
+    """
+    rebuild_table(con, "coverage", create, copy)
+    con.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_coverage_asset ON coverage(asset_id);
+        CREATE INDEX IF NOT EXISTS idx_coverage_class ON coverage(test_class);
         """
     )
     con.commit()
@@ -429,6 +622,54 @@ def register_evidence(
         )
         added += 1
     return added
+
+
+HTTP_ID_SEGMENT = re.compile(
+    r"^(?:\d+"
+    r"|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    r"|[0-9a-fA-F]{16,})$"
+)
+
+
+def normalize_route(path: str) -> str:
+    """Concrete object ids become `:id`, so two captures of the same endpoint
+    share a fingerprint instead of minting an observation per object."""
+    return "/".join(
+        ":id" if HTTP_ID_SEGMENT.match(part) else part for part in path.split("/")
+    )
+
+
+def parse_http_request(path: Path) -> dict[str, str]:
+    """Derive method/route/selector from a saved raw HTTP request.
+
+    Capture is supposed to happen before the work continues, so the command that
+    does it cannot cost eleven flags — the request file already carries most of
+    them. Explicitly passed flags always win over what is derived here."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    match = re.search(r"^([A-Z]+)\s+(\S+)\s+HTTP/\d", text, re.MULTILINE)
+    if not match:
+        raise PTError(
+            f"{path.name} has no HTTP request line (METHOD path HTTP/x.y); "
+            "pass --method/--route by hand"
+        )
+    method, target = match.group(1), match.group(2)
+    target = re.sub(r"^https?://[^/]+", "", target) or "/"
+    raw_path, _, query = target.partition("?")
+    derived = {"method": method, "route": normalize_route(raw_path or "/")}
+    if query:
+        selector = query.split("&")[0].split("=")[0].strip()
+        if selector:
+            derived["selector"] = selector
+    return derived
+
+
+def apply_http_request_defaults(args: argparse.Namespace) -> None:
+    if not getattr(args, "from_http", None):
+        return
+    absolute, _ = engagement_relative(args.from_http)
+    for field, value in parse_http_request(absolute).items():
+        if not getattr(args, field, None):
+            setattr(args, field, value)
 
 
 def observation_fingerprint(args: argparse.Namespace, seg_id: int) -> str:
@@ -935,24 +1176,39 @@ def registry_summary(con: sqlite3.Connection) -> str:
     active_findings = finding_counts.get("confirmed", 0) + finding_counts.get(
         "draft", 0
     )
-    untriaged = sum(
-        observation_counts.get(state, 0)
-        for state in ("new", "validating", "confirmed", "inconclusive")
-    )
     lines = [
         f"- Report vulnerabilities: {vulnerabilities}",
         f"- Active findings: {active_findings}",
         f"- Merged/rejected findings: "
         f"{finding_counts.get('merged', 0) + finding_counts.get('rejected', 0)}",
-        f"- Untriaged observations: {untriaged}",
-        f"- Linked observations: {observation_counts.get('linked', 0)}",
+        f"- Observations awaiting operator review: "
+        f"{observation_counts.get('proposed', 0)} (`ptctl.py inbox`)",
+        f"- Observations accepted into findings: "
+        f"{observation_counts.get('accepted', 0)}",
+        f"- Observations dismissed: {observation_counts.get('dismissed', 0)}",
         f"- Inventory: {hosts} host(s), {assets} asset(s)",
     ]
-    if observation_counts.get("new", 0):
-        lines.append(
-            f"- ACTION REQUIRED: {observation_counts['new']} observation(s) "
-            "still in transient state=new"
+    if assets:
+        untested = int(
+            con.execute(
+                """
+                SELECT COUNT(*) AS n FROM asset a
+                WHERE NOT EXISTS (SELECT 1 FROM coverage c WHERE c.asset_id=a.id)
+                  AND NOT EXISTS (SELECT 1 FROM observation o WHERE o.asset_id=a.id)
+                """
+            ).fetchone()["n"]
         )
+        lines.append(
+            f"- Assets with nothing recorded: {untested} "
+            "(`ptctl.py coverage gaps` lists them)"
+        )
+    open_cleanup = int(
+        con.execute(
+            "SELECT COUNT(*) AS n FROM cleanup WHERE state='open'"
+        ).fetchone()["n"]
+    )
+    if open_cleanup:
+        lines.append(f"- Open cleanup obligations: {open_cleanup}")
     return "\n".join(lines)
 
 
@@ -972,13 +1228,22 @@ def pending_summary(limit: int) -> str:
     return "\n".join(lines)
 
 
+def clipped_sections(sections: list[tuple[str, str, int]]) -> list[str]:
+    """Sections whose own cap is smaller than their body — reported, never silent."""
+    return [
+        f"{title} (-{len(body.strip()) - section_cap} chars)"
+        for title, body, section_cap in sections
+        if len(body.strip()) > section_cap
+    ]
+
+
 def build_bounded_context(
     sections: list[tuple[str, str, int]], max_chars: int
 ) -> str:
     if max_chars < 4000:
         raise PTError("--max-chars must be at least 4000")
     output = ["PT CONTEXT BOOT — progressive disclosure"]
-    reserve = 700
+    reserve = 900
     for title, body, section_cap in sections:
         if not body.strip():
             continue
@@ -987,13 +1252,28 @@ def build_bounded_context(
         if available <= 100:
             break
         output.extend((prefix, clip_text(body, min(section_cap, available))))
-    manifest = (
+    overflow = clipped_sections(sections)
+    warning = (
+        "\n\n--- INCOMPLETE BOOT ---\n"
+        "These sections did not fit and were cut mid-text: "
+        + "; ".join(overflow)
+        + ".\nRead the source file directly before relying on them, and shrink it "
+        "or raise --max-chars.\n"
+        if overflow
+        else ""
+    )
+    manifest = warning + (
         "\n\n--- Context policy ---\n"
-        "Loaded now: hard rules, scope, handoff, registry counts, compact open tasks.\n"
+        "Loaded now: engagement identity, scope, open cleanup obligations, "
+        "registry counts, compact open tasks. The hard rules are in AGENTS.md, "
+        "which your client loads natively — they are not repeated here.\n"
         "Not loaded: journal prose, finding/vulnerability write-ups, evidence bodies, scans, "
         "completed TODO history.\n"
         "After the human chooses a target, form an independent test plan first; "
-        "then use `context focus`, `context history`, or `context resume`."
+        "then use `context focus`, `context history`, `context resume`, or "
+        "`coverage gaps`.\n"
+        "Sessions are independent and may run concurrently: the engagement DB "
+        "is the only state you share with the other agents."
     )
     result = "".join(output)
     if len(result) + len(manifest) <= max_chars:
@@ -1004,26 +1284,22 @@ def build_bounded_context(
 
 
 def boot_context(
-    con: sqlite3.Connection, max_chars: int, include_rules: bool, task_limit: int
+    con: sqlite3.Connection, max_chars: int, task_limit: int
 ) -> str:
-    sections: list[tuple[str, str, int]] = []
-    if include_rules:
-        sections.append(
-            (
-                "Hard engagement rules (Claude native bridge)",
-                read_text(ROOT / "AGENTS.md"),
-                9400,
-            )
-        )
-    else:
-        sections.append(("Engagement", engagement_identity(), 1000))
+    # AGENTS.md is never inlined here. Both supported clients discover it
+    # natively (Codex reads it; Claude Code hardcodes CLAUDE.md / AGENTS.md
+    # discovery), so bridging it into the bootstrap put the same ~12 KB of
+    # rules in context twice, re-paid on every resume and compact.
+    sections: list[tuple[str, str, int]] = [
+        ("Engagement", engagement_identity(), 1000)
+    ]
     sections.extend(
         (
             ("Scope boundaries", scope_summary(), 1600),
             (
-                "Current handoff",
-                handoff_boot_context(con),
-                1800,
+                "Cleanup obligations still open",
+                cleanup_summary(con),
+                1200,
             ),
             ("Canonical registry counts", registry_summary(con), 600),
             ("Open work (titles only)", pending_summary(task_limit), 1500),
@@ -1038,7 +1314,6 @@ def cmd_context_boot(args: argparse.Namespace) -> None:
             boot_context(
                 con,
                 max_chars=args.max_chars,
-                include_rules=args.include_rules,
                 task_limit=args.task_limit,
             )
         )
@@ -1049,7 +1324,6 @@ def cmd_context_explain(args: argparse.Namespace) -> None:
         rendered = boot_context(
             con,
             max_chars=args.max_chars,
-            include_rules=args.include_rules,
             task_limit=args.task_limit,
         )
         counts = con.execute(
@@ -1058,41 +1332,36 @@ def cmd_context_explain(args: argparse.Namespace) -> None:
               (SELECT COUNT(*) FROM vulnerabilities) AS vulnerabilities,
               (SELECT COUNT(*) FROM finding) AS findings,
               (SELECT COUNT(*) FROM observation) AS observations,
-              (SELECT COUNT(*) FROM evidence) AS evidence
+              (SELECT COUNT(*) FROM evidence) AS evidence,
+              (SELECT COUNT(*) FROM coverage) AS coverage
             """
         ).fetchone()
     print(f"Direct boot context: {len(rendered)} chars (budget={args.max_chars})")
     print("Sources:")
+    rules_bytes = file_size(ROOT / "AGENTS.md")
     print(
-        f"- AGENTS.md: "
-        f"{'included for Claude' if args.include_rules else 'excluded here (native in Codex)'} "
-        f"({file_size(ROOT / 'AGENTS.md')} bytes)"
+        f"- AGENTS.md: never inlined; loaded natively by both clients, "
+        f"identity fields summarized ({rules_bytes} bytes)"
     )
     print(f"- scope.txt: summarized ({file_size(ROOT / 'scope.txt')} bytes)")
     print(
         f"- out-of-scope.txt: summarized "
         f"({file_size(ROOT / 'out-of-scope.txt')} bytes)"
     )
-    print(f"- .context/handoff.md: included ({file_size(HANDOFF_PATH)} bytes)")
-    print(
-        f"- .context/state.json: delta metadata only "
-        f"({file_size(SESSION_STATE_PATH)} bytes)"
-    )
-    print(
-        f"- .context/active.json: "
-        f"{'active marker only' if ACTIVE_SESSION_PATH.is_file() else 'no active session'}"
-    )
+    print("- cleanup table: open obligations only (what testing left behind)")
     print(f"- TODO.md: open titles only ({len(open_tasks())} open)")
     print(
         f"- registry: counts only ({counts['vulnerabilities']} report vulnerabilities, "
-        f"{counts['findings']} findings, "
-        f"{counts['observations']} observations, {counts['evidence']} evidence)"
+        f"{counts['findings']} findings, {counts['observations']} observations, "
+        f"{counts['evidence']} evidence, {counts['coverage']} coverage entries)"
     )
     print("Excluded:")
     print("- journal.md prose")
     print("- finding/vulnerability write-ups and report prose")
     print("- evidence contents, scans, and Burp history")
     print("- completed TODO history")
+    print("- the attempt log itself (`coverage list` loads it)")
+    print("- the operator review queue (`ptctl.py inbox` loads it)")
 
 
 def cmd_context_pending(args: argparse.Namespace) -> None:
@@ -1130,9 +1399,11 @@ def matching_registry_rows(
     ).fetchall()
     observations = con.execute(
         """
-        SELECT o.id, o.state, o.family, o.title, COALESCE(o.component, '') AS component,
+        SELECT o.id, o.state, o.confidence, o.family, o.title,
+               COALESCE(o.component, '') AS component,
                COALESCE(o.boundary, '') AS boundary, COALESCE(o.method, '') AS method,
-               COALESCE(o.route, '') AS route, s.name AS segment
+               COALESCE(o.route, '') AS route,
+               COALESCE(o.disposition, '') AS disposition, s.name AS segment
         FROM observation o
         JOIN segment s ON s.id=o.segment_id
         ORDER BY o.id
@@ -1236,6 +1507,7 @@ def cmd_context_focus(args: argparse.Namespace) -> None:
     )
     lines.extend(
         f"- {display_observation(int(row['id']))} state={row['state']} "
+        f"confidence={row['confidence']} "
         f"{row['family']} [{row['segment']}] {row['component']} {row['route']}"
         for row in observations[: args.limit]
     )
@@ -1303,8 +1575,9 @@ def cmd_context_history(args: argparse.Namespace) -> None:
         lines.append("- none")
     lines.append(f"\nObservations ({len(observations)}):")
     lines.extend(
-        f"- {display_observation(int(row['id']))} {row['state']} "
-        f"{row['family']} [{row['segment']}] — {row['title']}"
+        f"- {display_observation(int(row['id']))} {row['state']}"
+        f"/{row['confidence']} {row['family']} [{row['segment']}] — {row['title']}"
+        + (f" — dismissed: {row['disposition']}" if row["disposition"] else "")
         for row in observations[: args.limit]
     )
     if not observations:
@@ -1473,14 +1746,17 @@ def observation_resume_context(
     ref = display_observation(obs_id)
     lines = [
         f"RESUME {ref} — {row['title']}",
-        f"- state: {row['state']}",
+        f"- state: {row['state']} (confidence={row['confidence']}"
+        + (f", decided by {row['decided_by']}" if row["decided_by"] else "")
+        + ")",
         f"- family/segment: {row['family']} / {row['segment']}",
         f"- component/boundary: {row['component'] or '-'} / {row['boundary'] or '-'}",
         f"- request identity: {row['method'] or '-'} {row['route'] or '-'} "
         f"selector={row['selector'] or '-'}",
         f"- roles: {row['attacker_role'] or '-'} -> {row['target_role'] or '-'}",
         f"- source: {row['source'] or '-'}",
-        f"- notes/disposition: {row['notes'] or '-'} / {row['disposition'] or '-'}",
+        f"- notes: {row['notes'] or '-'}",
+        f"- dismissal reason: {row['disposition'] or '-'}",
         f"- canonical finding: "
         f"{display_finding(int(link['id'])) + ' ' + link['slug'] if link else '<none>'}",
         "",
@@ -1519,649 +1795,318 @@ def cmd_context_resume(args: argparse.Namespace) -> None:
         print(finding_resume_context(con, finding_row(con, args.reference), args.max_chars))
 
 
-def bullet_section(title: str, values: list[str]) -> str:
-    lines = [f"## {title}"]
-    lines.extend(f"- {clean_single_line(value, title) or '<empty>'}" for value in values)
-    if not values:
-        lines.append("- None")
+# ---------------------------------------------------------------------------
+# Cleanup register and coverage ledger
+#
+# These replaced the single-tenant .context/ session layer (handoff.md,
+# state.json, active.json), which assumed exactly one agent per engagement: the
+# baseline was global, so the first session to close absorbed every other
+# session's in-flight artifacts and silently released their capture gate.
+#
+# Both tables live in the engagement DB and are INSERT-only (or a single-row
+# state flip), so any number of concurrent sessions record into them with no
+# shared file to overwrite. They hold the two things the registry cannot
+# reconstruct on its own: what we left behind on the target, and what we tested
+# without finding anything.
+# ---------------------------------------------------------------------------
+
+
+def display_cleanup(value: int) -> str:
+    return f"C{value:02d}"
+
+
+def cleanup_id(con: sqlite3.Connection, ref: str) -> int:
+    match = re.fullmatch(r"[Cc](\d+)", ref)
+    if match:
+        value = int(match.group(1))
+    elif ref.isdigit():
+        value = int(ref)
+    else:
+        raise PTError(f"invalid cleanup reference '{ref}' (expected C01 or numeric id)")
+    if con.execute("SELECT 1 FROM cleanup WHERE id=?", (value,)).fetchone() is None:
+        raise PTError(f"cleanup {display_cleanup(value)} not found")
+    return value
+
+
+def cleanup_rows(con: sqlite3.Connection, include_done: bool) -> list[sqlite3.Row]:
+    where = "" if include_done else "WHERE c.state='open'"
+    return con.execute(
+        f"""
+        SELECT c.id, c.what, COALESCE(c.location, '') AS location, c.state,
+               COALESCE(c.owner, '') AS owner, COALESCE(c.note, '') AS note,
+               c.created_at, COALESCE(h.name, '') AS host,
+               COALESCE(a.port, '') AS port
+        FROM cleanup c
+        LEFT JOIN asset a ON a.id=c.asset_id
+        LEFT JOIN host h ON h.id=a.host_id
+        {where}
+        ORDER BY c.state, c.id
+        """
+    ).fetchall()
+
+
+def cleanup_where(row: sqlite3.Row) -> str:
+    if row["location"]:
+        return str(row["location"])
+    if row["host"]:
+        return f"{row['host']}:{row['port']}" if row["port"] != "" else str(row["host"])
+    return ""
+
+
+def cleanup_summary(con: sqlite3.Connection, limit: int = 10) -> str:
+    rows = cleanup_rows(con, include_done=False)
+    if not rows:
+        return "- None open"
+    lines = []
+    for row in rows[:limit]:
+        where = cleanup_where(row)
+        lines.append(
+            f"- {display_cleanup(int(row['id']))} {clip_text(row['what'], 160)}"
+            + (f" [{where}]" if where else "")
+        )
+    if len(rows) > limit:
+        lines.append(
+            f"- … {len(rows) - limit} more; run `python3 db/ptctl.py cleanup list`"
+        )
     return "\n".join(lines)
 
 
-def artifact_manifest(
-    baseline: dict[str, object] | None = None,
-) -> dict[str, dict[str, int | str]]:
-    manifest: dict[str, dict[str, int | str]] = {}
-    errors: list[str] = []
-    previous = baseline or {}
-
-    def record(path: Path) -> None:
-        try:
-            metadata = path.lstat()
-        except OSError as exc:
-            errors.append(f"{path.relative_to(ROOT)}: {exc}")
-            return
-        relative = path.relative_to(ROOT).as_posix()
-        kind = "symlink" if path.is_symlink() else "file"
-        old = previous.get(relative)
-        reusable = (
-            isinstance(old, dict)
-            and old.get("kind") == kind
-            and old.get("size") == int(metadata.st_size)
-            and old.get("mtime_ns") == int(metadata.st_mtime_ns)
-            and old.get("ctime_ns") == int(metadata.st_ctime_ns)
-            and isinstance(old.get("sha256"), str)
-        )
-        try:
-            if reusable:
-                digest = str(old["sha256"])
-            elif kind == "symlink":
-                digest = hashlib.sha256(os.readlink(path).encode()).hexdigest()
-            else:
-                digest = sha256_file(path)
-        except OSError as exc:
-            errors.append(f"{relative}: {exc}")
-            return
-        manifest[relative] = {
-            "kind": kind,
-            "size": int(metadata.st_size),
-            "mtime_ns": int(metadata.st_mtime_ns),
-            "ctime_ns": int(metadata.st_ctime_ns),
-            "sha256": digest,
-        }
-
-    def walk_error(exc: OSError) -> None:
-        errors.append(str(exc))
-
-    for root_name in ("scans", "poc"):
-        artifact_root = ROOT / root_name
-        if not artifact_root.is_dir():
-            continue
-        for directory, dirnames, filenames in os.walk(
-            artifact_root, followlinks=False, onerror=walk_error
-        ):
-            directory_path = Path(directory)
-            kept_dirs = []
-            for dirname in sorted(dirnames):
-                path = directory_path / dirname
-                if path.is_symlink():
-                    record(path)
-                else:
-                    kept_dirs.append(dirname)
-            dirnames[:] = kept_dirs
-            for filename in sorted(filenames):
-                record(directory_path / filename)
-    if errors:
-        raise PTError(
-            "cannot inspect the session artifact tree:\n- " + "\n- ".join(errors[:10])
-        )
-    return dict(sorted(manifest.items()))
-
-
-def database_digest(con: sqlite3.Connection) -> str:
-    digest = hashlib.sha256()
-    for statement in con.iterdump():
-        digest.update(statement.encode("utf-8", errors="replace"))
-        digest.update(b"\n")
-    return digest.hexdigest()
-
-
-def row_digest(row: sqlite3.Row) -> str:
-    payload = json.dumps(
-        {key: row[key] for key in row.keys()},
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
-    return hashlib.sha256(payload.encode()).hexdigest()
-
-
-def registry_snapshot(con: sqlite3.Connection) -> dict[str, object]:
-    observations = {
-        str(row["id"]): row_digest(row)
-        for row in con.execute("SELECT * FROM observation ORDER BY id")
-    }
-    findings = {
-        str(row["id"]): row_digest(row)
-        for row in con.execute("SELECT * FROM finding ORDER BY id")
-    }
-    vulnerabilities = {
-        str(row["id"]): row_digest(row)
-        for row in con.execute(
-            """
-            SELECT v.*, COALESCE(GROUP_CONCAT(vf.finding_id, ','), '') AS finding_ids
-            FROM vulnerabilities v
-            LEFT JOIN vulnerability_finding vf ON vf.vulnerability_id=v.id
-            GROUP BY v.id
-            ORDER BY v.id
-            """
-        )
-    }
-    evidence = {
-        str(row["id"]): {
-            "observation_id": int(row["observation_id"]),
-            "finding_id": (
-                int(row["finding_id"]) if row["finding_id"] is not None else None
-            ),
-            "path": str(row["path"]),
-            "sha256": str(row["sha256"]),
-        }
-        for row in con.execute(
-            """
-            SELECT e.id, e.observation_id, e.path, e.sha256, fo.finding_id
-            FROM evidence e
-            LEFT JOIN finding_observation fo
-              ON fo.observation_id=e.observation_id
-            ORDER BY e.id
-            """
-        )
-    }
-    return {
-        "database_sha256": database_digest(con),
-        "observations": observations,
-        "findings": findings,
-        "vulnerabilities": vulnerabilities,
-        "evidence": evidence,
-    }
-
-
-def build_session_state(
-    con: sqlite3.Connection,
-    recorded_at: str | None = None,
-    baseline: dict[str, object] | None = None,
-) -> dict[str, object]:
-    previous_artifacts: dict[str, object] | None = None
-    if baseline is not None:
-        artifacts = baseline.get("artifacts")
-        if isinstance(artifacts, dict):
-            previous_artifacts = artifacts
-    return {
-        "version": SESSION_STATE_VERSION,
-        "recorded_at": recorded_at
-        or datetime.now().astimezone().isoformat(timespec="seconds"),
-        "artifacts": artifact_manifest(previous_artifacts),
-        "registry": registry_snapshot(con),
-    }
-
-
-def load_session_state() -> dict[str, object] | None:
-    if not SESSION_STATE_PATH.is_file():
-        return None
-    try:
-        state = json.loads(read_text(SESSION_STATE_PATH))
-    except json.JSONDecodeError as exc:
-        raise PTError(f"{SESSION_STATE_PATH.relative_to(ROOT)} is invalid JSON: {exc}")
-    if not isinstance(state, dict) or state.get("version") != SESSION_STATE_VERSION:
-        raise PTError(
-            f"{SESSION_STATE_PATH.relative_to(ROOT)} has an unsupported state version"
-        )
-    if not isinstance(state.get("artifacts"), dict) or not isinstance(
-        state.get("registry"), dict
-    ):
-        raise PTError(
-            f"{SESSION_STATE_PATH.relative_to(ROOT)} is missing artifacts/registry"
-        )
-    return state
-
-
-def load_active_session() -> dict[str, object] | None:
-    if not ACTIVE_SESSION_PATH.is_file():
-        return None
-    try:
-        active = json.loads(read_text(ACTIVE_SESSION_PATH))
-    except json.JSONDecodeError as exc:
-        raise PTError(f"{ACTIVE_SESSION_PATH.relative_to(ROOT)} is invalid JSON: {exc}")
-    if not isinstance(active, dict) or not active.get("started_at"):
-        raise PTError(f"{ACTIVE_SESSION_PATH.relative_to(ROOT)} is invalid")
-    return active
-
-
-def cmd_session_start(args: argparse.Namespace) -> None:
-    existing = load_active_session()
-    if existing:
-        if not args.quiet:
-            print(
-                "session already active since "
-                f"{existing['started_at']} "
-                f"(client={existing.get('client', 'unknown')})"
-            )
-        return
-    client = clean_single_line(args.client, "client") or "manual"
-    active = {
-        "version": 1,
-        "started_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "client": client,
-    }
-    write_atomic(
-        ACTIVE_SESSION_PATH,
-        json.dumps(active, indent=2, sort_keys=True) + "\n",
-    )
-    if not args.quiet:
-        print(f"session started ({client})")
-
-
-def artifact_delta(
-    baseline: dict[str, object] | None,
-    current: dict[str, dict[str, int | str]],
-) -> dict[str, list[str]]:
-    if baseline is None:
-        handoff_mtime = (
-            HANDOFF_PATH.stat().st_mtime_ns if HANDOFF_PATH.is_file() else -1
-        )
-        return {
-            "added": sorted(
-                path
-                for path, metadata in current.items()
-                if int(metadata["mtime_ns"]) > handoff_mtime
-            ),
-            "modified": [],
-            "deleted": [],
-        }
-    previous = baseline["artifacts"]
-    assert isinstance(previous, dict)
-
-    def identity(metadata: object) -> tuple[object, object, object]:
-        if not isinstance(metadata, dict):
-            return (None, None, None)
-        return (
-            metadata.get("kind"),
-            metadata.get("size"),
-            metadata.get("sha256"),
-        )
-
-    return {
-        "added": sorted(set(current) - set(previous)),
-        "modified": sorted(
-            path
-            for path in set(current) & set(previous)
-            if identity(current[path]) != identity(previous[path])
-        ),
-        "deleted": sorted(set(previous) - set(current)),
-    }
-
-
-def registry_delta_refs(
-    baseline: dict[str, object] | None, current: dict[str, object]
-) -> list[str]:
-    if baseline is None:
-        previous: dict[str, object] = {
-            "observations": {},
-            "findings": {},
-            "vulnerabilities": {},
-            "evidence": {},
-        }
-    else:
-        registry = baseline["registry"]
-        assert isinstance(registry, dict)
-        previous = registry
-    refs: set[str] = set()
-
-    for entity, formatter in (
-        ("observations", display_observation),
-        ("findings", display_finding),
-        ("vulnerabilities", display_vulnerability),
-    ):
-        old_rows = previous.get(entity, {})
-        new_rows = current.get(entity, {})
-        if not isinstance(old_rows, dict) or not isinstance(new_rows, dict):
-            raise PTError(
-                f"{SESSION_STATE_PATH.relative_to(ROOT)} has invalid registry.{entity}"
-            )
-        for row_id in set(old_rows) | set(new_rows):
-            if old_rows.get(row_id) != new_rows.get(row_id):
-                refs.add(formatter(int(row_id)))
-
-    old_evidence = previous.get("evidence", {})
-    new_evidence = current.get("evidence", {})
-    if not isinstance(old_evidence, dict) or not isinstance(new_evidence, dict):
-        raise PTError(
-            f"{SESSION_STATE_PATH.relative_to(ROOT)} has invalid registry.evidence"
-        )
-    for evidence_id in set(old_evidence) | set(new_evidence):
-        if old_evidence.get(evidence_id) == new_evidence.get(evidence_id):
-            continue
-        row = new_evidence.get(evidence_id) or old_evidence.get(evidence_id)
-        if not isinstance(row, dict):
-            continue
-        if row.get("observation_id") is not None:
-            refs.add(display_observation(int(row["observation_id"])))
-        if row.get("finding_id") is not None:
-            refs.add(display_finding(int(row["finding_id"])))
-    return sorted(
-        refs,
-        key=lambda ref: (ref[0], int(ref[1:])),
-    )
-
-
-def database_changed(
-    baseline: dict[str, object] | None, current: dict[str, object]
-) -> bool:
-    if baseline is None:
-        return False
-    previous = baseline["registry"]
-    assert isinstance(previous, dict)
-    old_digest = previous.get("database_sha256")
-    new_digest = current.get("database_sha256")
-    return bool(old_digest and new_digest and old_digest != new_digest)
-
-
-def collect_session_delta(
-    con: sqlite3.Connection,
-) -> tuple[dict[str, object] | None, dict[str, object], dict[str, object]]:
-    baseline = load_session_state()
-    current = build_session_state(con, baseline=baseline)
-    artifacts = current["artifacts"]
-    registry = current["registry"]
-    assert isinstance(artifacts, dict)
-    assert isinstance(registry, dict)
-    delta: dict[str, object] = {
-        "artifacts": artifact_delta(baseline, artifacts),
-        "registry_refs": registry_delta_refs(baseline, registry),
-        "database_changed": database_changed(baseline, registry),
-        "active_session": load_active_session(),
-        "baseline": (
-            baseline.get("recorded_at") if baseline else "legacy handoff mtime"
-        ),
-    }
-    return baseline, current, delta
-
-
-def has_artifact_delta(delta: dict[str, object]) -> bool:
-    artifacts = delta["artifacts"]
-    assert isinstance(artifacts, dict)
-    return any(bool(artifacts[name]) for name in ("added", "modified", "deleted"))
-
-
-def delta_count_summary(delta: dict[str, object]) -> str:
-    artifacts = delta["artifacts"]
-    assert isinstance(artifacts, dict)
-    return (
-        f"+{len(artifacts['added'])} added, "
-        f"~{len(artifacts['modified'])} modified, "
-        f"-{len(artifacts['deleted'])} deleted"
-    )
-
-
-def canonical_references(values: Iterable[str]) -> list[str]:
-    refs: set[str] = set()
-    for value in values:
-        for prefix, number in re.findall(r"\b([FfOoVv])(\d+)\b", value):
-            item_id = int(number)
-            refs.add(
-                display_finding(item_id)
-                if prefix.lower() == "f"
-                else (
-                    display_vulnerability(item_id)
-                    if prefix.lower() == "v"
-                    else display_observation(item_id)
-                )
-            )
-    return sorted(refs, key=lambda ref: (ref[0], int(ref[1:])))
-
-
-def validate_canonical_references(
-    con: sqlite3.Connection, refs: Iterable[str]
-) -> None:
-    for ref in refs:
-        if ref.startswith("V"):
-            vulnerability_row(con, ref)
-        elif ref.startswith("F"):
-            finding_row(con, ref)
-        else:
-            observation_id(con, ref)
-
-
-def validate_capture_gate(
-    con: sqlite3.Connection, args: argparse.Namespace, delta: dict[str, object]
-) -> tuple[str | None, str | None, list[str]]:
-    outcome = args.outcome
-    assessment = clean_single_line(args.assessment, "assessment")
-    refs = canonical_references(args.reference)
-    validate_canonical_references(con, refs)
-    gate_required = has_artifact_delta(delta)
-    active_session = delta["active_session"]
-
-    if (gate_required or active_session) and not outcome:
-        trigger = (
-            "scans/poc changed since the last handoff "
-            f"({delta_count_summary(delta)})"
-            if gate_required
-            else "the active PT session requires an explicit outcome"
-        )
-        raise PTError(
-            f"capture gate: {trigger}. Run `ptctl.py session delta`, then "
-            "close with `--outcome captured --reference O####|F##|V##`, "
-            "`--outcome no-finding --assessment '…'`, `--outcome mixed ...`, "
-            "or `--outcome administrative --assessment '…'`"
-        )
-    if assessment and not outcome:
-        raise PTError("--assessment requires --outcome")
-    if outcome in {"captured", "mixed"}:
-        if not refs:
-            raise PTError(
-                f"--outcome {outcome} requires a canonical O####/F##/V## --reference"
-            )
-        changed_refs = set(delta["registry_refs"])
-        if not changed_refs.intersection(refs):
-            changed = ", ".join(delta["registry_refs"]) or "<none>"
-            raise PTError(
-                "capture gate: supplied references were not created or updated "
-                f"since the last handoff; session registry delta is {changed}"
-            )
-    if outcome in {"no-finding", "mixed", "administrative"} and not assessment:
-        raise PTError(f"--outcome {outcome} requires --assessment")
-    return outcome, assessment, refs
-
-
-def format_artifact_delta(delta: dict[str, object], limit: int) -> str:
-    artifacts = delta["artifacts"]
-    assert isinstance(artifacts, dict)
-    lines = [
-        f"Session artifact delta since {delta['baseline']}:",
-        f"- {delta_count_summary(delta)}",
-    ]
-    remaining = limit
-    for name, marker in (("added", "+"), ("modified", "~"), ("deleted", "-")):
-        for path in artifacts[name]:
-            if remaining <= 0:
-                break
-            lines.append(f"{marker} {path}")
-            remaining -= 1
-    total = sum(len(artifacts[name]) for name in ("added", "modified", "deleted"))
-    if total > limit:
-        lines.append(f"… {total - limit} more path(s); increase --limit")
-    registry_refs = delta["registry_refs"]
-    lines.append(
-        "- Registry delta: "
-        + (", ".join(registry_refs) if registry_refs else "<none>")
-    )
-    lines.append(
-        f"- Database state: {'changed' if delta['database_changed'] else 'unchanged'}"
-    )
-    lines.append(
-        "- Capture gate: "
-        + (
-            "REQUIRED"
-            if has_artifact_delta(delta)
-            else (
-                "SESSION OUTCOME REQUIRED"
-                if delta["active_session"]
-                else "not required"
-            )
-        )
-    )
-    return "\n".join(lines)
-
-
-def cmd_session_delta(args: argparse.Namespace) -> None:
+def cmd_cleanup_add(args: argparse.Namespace) -> None:
+    what = clean_single_line(args.what, "what")
+    if not what:
+        raise PTError("--what is required")
     with connect() as con:
-        _, _, delta = collect_session_delta(con)
-    if args.json:
-        print(json.dumps(delta, indent=2, sort_keys=True))
-    else:
-        print(format_artifact_delta(delta, args.limit))
+        con.execute("BEGIN IMMEDIATE")
+        target = asset_id(con, args.asset) if args.asset else None
+        cursor = con.execute(
+            "INSERT INTO cleanup (what, location, asset_id, owner, note) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                what,
+                clean_single_line(args.location, "location"),
+                target,
+                clean_single_line(args.owner, "owner"),
+                clean_single_line(args.note, "note"),
+            ),
+        )
+        con.commit()
+        print(f"{display_cleanup(int(cursor.lastrowid))} registered (open)")
 
 
-def cmd_session_close(args: argparse.Namespace) -> None:
-    focus = clean_single_line(args.focus, "focus")
-    if not focus:
-        raise PTError("--focus is required")
-    updated = datetime.now().astimezone().isoformat(timespec="seconds")
+def cmd_cleanup_done(args: argparse.Namespace) -> None:
     with connect() as con:
-        _, current_state, delta = collect_session_delta(con)
-        outcome, assessment, refs = validate_capture_gate(con, args, delta)
-    assessment_values = [
-        f"Outcome: {outcome or 'not-required'}",
-        f"Artifact delta: {delta_count_summary(delta)}",
-    ]
-    if assessment:
-        assessment_values.append(f"Assessment: {assessment}")
-    if refs:
-        assessment_values.append(f"Validated references: {', '.join(refs)}")
-    content = "\n\n".join(
-        (
-            "# Current handoff",
-            f"- **Updated**: {updated}\n- **Last focus**: {focus}",
-            bullet_section("Session assessment", assessment_values),
-            bullet_section("Completed this session", args.completed),
-            bullet_section("Live state / do not disturb", args.live_state),
-            bullet_section("Blockers", args.blocker),
-            bullet_section("Cleanup obligations", args.cleanup),
-            bullet_section("Suggested next work", args.next),
-            bullet_section("Canonical pointers", args.reference),
+        con.execute("BEGIN IMMEDIATE")
+        row_id = cleanup_id(con, args.reference)
+        con.execute(
+            "UPDATE cleanup SET state='done', resolved_at=CURRENT_TIMESTAMP, "
+            "note=COALESCE(?, note) WHERE id=?",
+            (clean_single_line(args.note, "note"), row_id),
         )
-    )
-    if len(content) > args.max_chars:
-        raise PTError(
-            f"handoff is {len(content)} chars; reduce it below --max-chars={args.max_chars}"
-        )
-    write_atomic(HANDOFF_PATH, content + "\n")
-    current_state["recorded_at"] = updated
-    write_atomic(
-        SESSION_STATE_PATH,
-        json.dumps(current_state, indent=2, sort_keys=True) + "\n",
-    )
-    ACTIVE_SESSION_PATH.unlink(missing_ok=True)
-    print(f"updated {HANDOFF_PATH.relative_to(ROOT)} ({len(content)} chars)")
+        con.commit()
+    print(f"{display_cleanup(row_id)} resolved")
 
 
-def canonical_mutation_paths() -> list[Path]:
-    paths = [
-        ROOT / "TODO.md",
-        ROOT / "journal.md",
-    ]
-    if not SESSION_STATE_PATH.is_file():
-        paths.extend((DB_PATH, DB_PATH.with_name(DB_PATH.name + "-wal")))
-    activity = activity_file()
-    if activity:
-        paths.append(activity)
-    findings_dir = ROOT / "findings"
-    if findings_dir.is_dir():
-        paths.extend(
-            path for path in findings_dir.glob("*.md") if path.name != "_template.md"
-        )
-    vulnerabilities_dir = ROOT / "vulnerabilities"
-    if vulnerabilities_dir.is_dir():
-        paths.extend(
-            path
-            for path in vulnerabilities_dir.glob("*.md")
-            if path.name != "_template.md"
-        )
-    return [path for path in paths if path.exists()]
-
-
-def canonical_changes_since_handoff() -> list[Path]:
-    if not HANDOFF_PATH.is_file():
-        return canonical_mutation_paths()
-    handoff_mtime = HANDOFF_PATH.stat().st_mtime_ns
-    return [
-        path
-        for path in canonical_mutation_paths()
-        if path.stat().st_mtime_ns > handoff_mtime
-    ]
-
-
-def handoff_boot_context(con: sqlite3.Connection) -> str:
-    handoff = read_text(HANDOFF_PATH)
-    if not handoff:
-        return "- No handoff exists; initialize it with `ptctl.py session close`"
-    _, _, delta = collect_session_delta(con)
-    canonical_changes = canonical_changes_since_handoff()
-    active_session = delta["active_session"]
-    active_notice = ""
-    if isinstance(active_session, dict):
-        active_notice = (
-            f"- **Session**: active since {active_session['started_at']}; "
-            "an explicit outcome is required before Stop.\n"
-        )
-    if (
-        not canonical_changes
-        and not has_artifact_delta(delta)
-        and not delta["database_changed"]
-    ):
-        return "- **Freshness**: current\n" + active_notice + "\n" + handoff
-    warnings = [
-        "- **Freshness**: STALE — treat the handoff below as historical, not truth.",
-    ]
-    if canonical_changes:
-        warnings.append(
-            "- Canonical changes: "
-            + ", ".join(path.relative_to(ROOT).as_posix() for path in canonical_changes)
-        )
-    if has_artifact_delta(delta):
-        warnings.append(
-            f"- Artifact delta: {delta_count_summary(delta)}; capture gate pending."
-        )
-    if delta["database_changed"]:
-        warnings.append("- Structured database state changed after the handoff.")
-    warnings.append("- Run `python3 db/ptctl.py session delta` before continuing.")
-    return "\n".join(warnings) + "\n" + active_notice + "\n" + handoff
-
-
-def cmd_session_check(args: argparse.Namespace) -> None:
-    if not HANDOFF_PATH.is_file():
+def cmd_cleanup_list(args: argparse.Namespace) -> None:
+    with connect() as con:
+        rows = cleanup_rows(con, include_done=args.all)
+    print(f"Cleanup obligations: {len(rows)}")
+    for row in rows:
+        where = cleanup_where(row) or "-"
+        owner = f" owner={row['owner']}" if row["owner"] else ""
         print(
-            "session handoff missing: run `python3 db/ptctl.py session close "
-            "--focus '…'`"
+            f"{display_cleanup(int(row['id']))} [{row['state']}] {row['what']} "
+            f"@ {where}{owner} ({row['created_at']})"
         )
-        raise SystemExit(1)
+
+
+def coverage_target(
+    con: sqlite3.Connection, args: argparse.Namespace
+) -> tuple[int | None, int | None, str]:
+    """Resolve --asset / --segment into (asset_id, segment_id, label)."""
+    target_asset = asset_id(con, args.asset) if args.asset else None
+    target_segment = segment_id(con, args.segment) if args.segment else None
+    if target_asset is None and target_segment is None:
+        raise PTError("coverage needs --asset A1 or --segment <name>")
+    if target_asset is not None and target_segment is None:
+        row = con.execute(
+            """
+            SELECT hs.segment_id FROM asset a
+            JOIN host_segment hs ON hs.host_id=a.host_id
+            WHERE a.id=? LIMIT 1
+            """,
+            (target_asset,),
+        ).fetchone()
+        target_segment = int(row["segment_id"]) if row else None
+    label = f"A{target_asset}" if target_asset is not None else str(args.segment)
+    return target_asset, target_segment, label
+
+
+def cmd_coverage_add(args: argparse.Namespace) -> None:
+    test_class = normalize_family(args.test_class)
+    note = clean_single_line(args.note, "note")
+    if not note:
+        # The note IS the record. Without it the row asserts that a class was
+        # "covered" while saying nothing about what was actually tried, which is
+        # the completeness claim this ledger deliberately refuses to make.
+        raise PTError(
+            "--note is required: say what was actually tried "
+            "(e.g. 'cross-tenant read/write/delete all 403 for customer/customer')"
+        )
     with connect() as con:
-        _, _, delta = collect_session_delta(con)
-    stale = canonical_changes_since_handoff()
-    active_session = delta["active_session"]
-    if (
-        stale
-        or has_artifact_delta(delta)
-        or delta["database_changed"]
-        or active_session
-    ):
-        if not args.quiet:
-            if stale or has_artifact_delta(delta) or delta["database_changed"]:
-                print("session handoff is stale")
-            else:
-                print("session capture gate is unresolved")
-            if isinstance(active_session, dict):
-                print(
-                    "Active session has no closing outcome "
-                    f"(started {active_session['started_at']})."
-                )
-            if stale:
-                print("Canonical sources changed after handoff:")
-                for path in stale:
-                    print(f"- {path.relative_to(ROOT)}")
-            if has_artifact_delta(delta):
-                print(format_artifact_delta(delta, 20))
-            elif delta["database_changed"]:
-                print("Structured database state changed after handoff.")
+        con.execute("BEGIN IMMEDIATE")
+        target_asset, target_segment, label = coverage_target(con, args)
+        con.execute(
+            "INSERT INTO coverage "
+            "(asset_id, segment_id, test_class, note, owner) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                target_asset,
+                target_segment,
+                test_class,
+                note,
+                clean_single_line(args.owner, "owner") or decided_by(args),
+            ),
+        )
+        con.commit()
+    print(f"attempt recorded: {label} {test_class} — {clip_text(note, 120)}")
+
+
+def coverage_ledger(
+    con: sqlite3.Connection, segment: str | None
+) -> dict[tuple[str, str], list[sqlite3.Row]]:
+    """Every attempt per (target, test_class), oldest first.
+
+    Nothing supersedes anything here. Two sessions poking at the same class from
+    different angles both did real work, and a reader judging whether a class is
+    covered needs to see both attempts, not the most recent one."""
+    rows = con.execute(
+        """
+        SELECT c.id, c.test_class, c.note,
+               COALESCE(c.owner, '') AS owner, c.recorded_at, c.asset_id,
+               COALESCE(s.name, '') AS segment,
+               COALESCE(h.name, '') AS host, COALESCE(a.port, '') AS port
+        FROM coverage c
+        LEFT JOIN asset a ON a.id=c.asset_id
+        LEFT JOIN host h ON h.id=a.host_id
+        LEFT JOIN segment s ON s.id=c.segment_id
+        ORDER BY c.id
+        """
+    ).fetchall()
+    ledger: dict[tuple[str, str], list[sqlite3.Row]] = {}
+    for row in rows:
+        if segment and row["segment"].lower() != segment.lower():
+            continue
+        target = (
+            f"A{int(row['asset_id'])} {row['host']}:{row['port']}"
+            if row["asset_id"] is not None
+            else f"[{row['segment']}]"
+        )
+        ledger.setdefault((target, row["test_class"]), []).append(row)
+    return ledger
+
+
+def cmd_coverage_list(args: argparse.Namespace) -> None:
+    with connect() as con:
+        ledger = coverage_ledger(con, args.segment)
+    total = sum(len(rows) for rows in ledger.values())
+    print(f"Recorded attempts: {total} across {len(ledger)} target/class pair(s)")
+    for (target, test_class), rows in sorted(ledger.items()):
+        print(f"{target} {test_class} ({len(rows)} attempt(s)):")
+        for row in rows[-args.limit :]:
+            owner = f" ({row['owner']})" if row["owner"] else ""
             print(
-                "run `python3 db/ptctl.py session close --focus '…' "
-                "--completed '…' --next '…'` and resolve any capture gate"
+                f"  [{row['recorded_at']}]{owner} {clip_text(row['note'], 300)}"
             )
-        raise SystemExit(1)
-    if not args.quiet:
-        print("session handoff is current")
+
+
+def cmd_coverage_gaps(args: argparse.Namespace) -> None:
+    with connect() as con:
+        assets = con.execute(
+            """
+            SELECT a.id, h.name AS host, a.port,
+                   COALESCE(a.protocol, '') AS protocol,
+                   COALESCE(a.technologies, '') AS technologies,
+                   COALESCE(GROUP_CONCAT(DISTINCT s.name), '') AS segments
+            FROM asset a
+            JOIN host h ON h.id=a.host_id
+            LEFT JOIN host_segment hs ON hs.host_id=h.id
+            LEFT JOIN segment s ON s.id=hs.segment_id
+            GROUP BY a.id
+            ORDER BY h.name, a.port
+            """
+        ).fetchall()
+        touched: dict[int, set[str]] = {}
+        for table, column in (("coverage", "test_class"), ("observation", "family")):
+            for row in con.execute(
+                f"SELECT asset_id, {column} AS value FROM {table} "
+                "WHERE asset_id IS NOT NULL"
+            ):
+                touched.setdefault(int(row["asset_id"]), set()).add(row["value"])
+
+    if args.segment:
+        assets = [
+            row for row in assets if args.segment.lower() in str(row["segments"]).lower()
+        ]
+    # The engagement's own vocabulary: every class anyone has tested or observed
+    # anywhere. Self-calibrating — no hardcoded taxonomy to keep in sync.
+    vocabulary: set[str] = set()
+    for values in touched.values():
+        vocabulary |= values
+
+    untouched = [row for row in assets if int(row["id"]) not in touched]
+    print(f"COVERAGE GAPS — {len(assets)} asset(s) in view")
+    print(
+        "\nVocabulary in this engagement: "
+        + (", ".join(sorted(vocabulary)) if vocabulary else "<nothing recorded yet>")
+    )
+    print(f"\nNever tested ({len(untouched)}):")
+    for row in untouched[: args.limit]:
+        print(
+            f"- A{int(row['id'])} {row['host']}:{row['port']}/{row['protocol']} "
+            f"[{row['segments']}] {row['technologies']}"
+        )
+    if not untouched:
+        print("- none")
+    if len(untouched) > args.limit:
+        print(f"… {len(untouched) - args.limit} more; increase --limit")
+
+    partial = []
+    for row in assets:
+        seen = touched.get(int(row["id"]))
+        if not seen:
+            continue
+        missing = sorted(vocabulary - seen)
+        if missing:
+            partial.append((row, missing))
+    print(f"\nTested, but not for every class seen elsewhere ({len(partial)}):")
+    for row, missing in partial[: args.limit]:
+        print(
+            f"- A{int(row['id'])} {row['host']}:{row['port']} missing: "
+            + ", ".join(missing)
+        )
+    if not partial:
+        print("- none")
+    print(
+        "\nA gap is a question, not a task: it says nobody recorded work there, "
+        "not that work is owed."
+    )
+
+
+def register_observation_evidence(
+    con: sqlite3.Connection, obs_id: int, args: argparse.Namespace
+) -> int:
+    """Register --evidence under the caller's --kind, and --from-http as the
+    http-request evidence every finding will eventually be required to carry."""
+    added = register_evidence(con, obs_id, args.evidence, args.kind, args.description)
+    if getattr(args, "from_http", None):
+        added += register_evidence(
+            con, obs_id, [args.from_http], HTTP_REQUEST_KIND, args.description
+        )
+    return added
 
 
 def cmd_observation_add(args: argparse.Namespace) -> None:
+    apply_http_request_defaults(args)
     with connect() as con:
         con.execute("BEGIN IMMEDIATE")
         seg_id = segment_id(con, args.segment)
@@ -2170,13 +2115,22 @@ def cmd_observation_add(args: argparse.Namespace) -> None:
         args.family = family
         fingerprint = args.fingerprint or observation_fingerprint(args, seg_id)
         existing = con.execute(
-            "SELECT id, state FROM observation WHERE fingerprint=?", (fingerprint,)
+            "SELECT id, state, confidence, disposition FROM observation "
+            "WHERE fingerprint=?",
+            (fingerprint,),
         ).fetchone()
         if existing:
             obs_id = int(existing["id"])
-            added = register_evidence(
-                con, obs_id, args.evidence, args.kind, args.description
-            )
+            added = register_observation_evidence(con, obs_id, args)
+            # A recapture that actually reproduced the behaviour upgrades the
+            # row; confidence never silently walks back to a suspicion.
+            confidence = existing["confidence"]
+            if args.confidence == "reproduced" and confidence != "reproduced":
+                con.execute(
+                    "UPDATE observation SET confidence='reproduced' WHERE id=?",
+                    (obs_id,),
+                )
+                confidence = "reproduced"
             for row in con.execute(
                 "SELECT finding_id FROM finding_observation WHERE observation_id=?",
                 (obs_id,),
@@ -2185,9 +2139,17 @@ def cmd_observation_add(args: argparse.Namespace) -> None:
                 sync_finding_markdown(con, finding_id)
                 sync_linked_vulnerabilities(con, finding_id)
             con.commit()
+            # Say WHY it was dismissed, here, where someone is about to spend
+            # time re-testing what a previous session already ruled out.
+            reason = (
+                f" — dismissed: {existing['disposition']}"
+                if existing["state"] == "dismissed" and existing["disposition"]
+                else ""
+            )
             print(
                 f"{display_observation(obs_id)} already exists "
-                f"(state={existing['state']}, evidence_added={added})"
+                f"(state={existing['state']}, confidence={confidence}, "
+                f"evidence_added={added}){reason}"
             )
             return
 
@@ -2197,13 +2159,14 @@ def cmd_observation_add(args: argparse.Namespace) -> None:
         cursor = con.execute(
             """
             INSERT INTO observation
-              (fingerprint, state, family, title, segment_id, asset_id,
-               component, boundary, method, route, selector, attacker_role,
-               target_role, source, notes)
-            VALUES (?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (fingerprint, state, confidence, family, title, segment_id,
+               asset_id, component, boundary, method, route, selector,
+               attacker_role, target_role, source, notes)
+            VALUES (?, 'proposed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 fingerprint,
+                args.confidence,
                 family,
                 title,
                 seg_id,
@@ -2220,43 +2183,197 @@ def cmd_observation_add(args: argparse.Namespace) -> None:
             ),
         )
         obs_id = int(cursor.lastrowid)
-        added = register_evidence(
-            con, obs_id, args.evidence, args.kind, args.description
-        )
+        added = register_observation_evidence(con, obs_id, args)
         con.commit()
         print(
-            f"created {display_observation(obs_id)} "
+            f"created {display_observation(obs_id)} state=proposed "
+            f"confidence={args.confidence} "
             f"(fingerprint={fingerprint[:12]}, evidence={added})"
         )
+
+
+def decided_by(args: argparse.Namespace) -> str | None:
+    """Who ruled on this. Falls back to $PT_OPERATOR so the workspace can supply
+    it once instead of every command carrying a flag."""
+    return clean_single_line(
+        getattr(args, "by", None) or os.environ.get("PT_OPERATOR"), "by"
+    )
 
 
 def cmd_observation_state(args: argparse.Namespace) -> None:
     with connect() as con:
         con.execute("BEGIN IMMEDIATE")
         obs_id = observation_id(con, args.observation)
+        row = con.execute(
+            "SELECT state, notes, disposition FROM observation WHERE id=?", (obs_id,)
+        ).fetchone()
         link = con.execute(
             "SELECT finding_id FROM finding_observation WHERE observation_id=?",
             (obs_id,),
         ).fetchone()
-        if link and args.state != "linked":
+        if link:
             raise PTError(
-                f"{display_observation(obs_id)} is linked to "
+                f"{display_observation(obs_id)} is accepted into "
                 f"{display_finding(int(link['finding_id']))}; "
                 "its state is managed by that canonical link"
             )
-        if not link and args.state == "linked":
+        if args.state == "accepted":
             raise PTError(
-                "state=linked can only be set by 'finding create' or 'finding attach'"
+                "state=accepted is set by 'finding create' or 'finding attach' — "
+                "an observation enters the report by being promoted, not relabelled"
             )
         disposition = clean_single_line(args.reason, "reason")
-        if args.state in {"rejected", "inconclusive", "duplicate"} and not disposition:
-            raise PTError(f"--reason is required when state={args.state}")
+        if args.state == "dismissed" and not disposition:
+            raise PTError("--reason is required to dismiss an observation")
+        notes = row["notes"]
+        if args.state == "proposed":
+            # Reopening: the old reason stops being the current disposition but
+            # stays readable, so nobody re-dismisses it for a settled reason.
+            if row["state"] == "dismissed" and row["disposition"]:
+                prefix = f"{notes} | " if notes else ""
+                notes = f"{prefix}previously dismissed: {row['disposition']}"
+            disposition = None
         con.execute(
-            "UPDATE observation SET state=?, disposition=? WHERE id=?",
-            (args.state, disposition, obs_id),
+            "UPDATE observation SET state=?, disposition=?, notes=?, decided_by=? "
+            "WHERE id=?",
+            (
+                args.state,
+                disposition,
+                notes,
+                decided_by(args) if args.state == "dismissed" else None,
+                obs_id,
+            ),
         )
         con.commit()
         print(f"{display_observation(obs_id)} state={args.state}")
+
+
+def cmd_observation_confidence(args: argparse.Namespace) -> None:
+    with connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        obs_id = observation_id(con, args.observation)
+        con.execute(
+            "UPDATE observation SET confidence=? WHERE id=?",
+            (args.confidence, obs_id),
+        )
+        con.commit()
+    print(f"{display_observation(obs_id)} confidence={args.confidence}")
+
+
+def observation_age(recorded_at: str | None) -> str:
+    """Coarse age, so a queue entry from ten minutes ago reads differently from
+    one nobody has looked at in three weeks."""
+    if not recorded_at:
+        return "-"
+    try:
+        stamp = datetime.datetime.strptime(str(recorded_at)[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return "-"
+    seconds = (
+        datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - stamp
+    ).total_seconds()
+    if seconds < 0:
+        return "0m"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h"
+    return f"{int(seconds // 86400)}d"
+
+
+def observation_rows(
+    con: sqlite3.Connection,
+    states: Iterable[str],
+    segment: str | None = None,
+    asset: str | None = None,
+    family: str | None = None,
+) -> list[sqlite3.Row]:
+    states = tuple(states)
+    clauses = [f"o.state IN ({','.join('?' for _ in states)})"]
+    params: list[object] = list(states)
+    if segment:
+        clauses.append("lower(s.name)=lower(?)")
+        params.append(segment)
+    if asset:
+        clauses.append("o.asset_id=?")
+        params.append(asset_id(con, asset))
+    if family:
+        clauses.append("o.family=?")
+        params.append(normalize_family(family))
+    return con.execute(
+        f"""
+        SELECT o.id, o.state, o.confidence, o.family, o.title, o.updated_at,
+               COALESCE(o.disposition, '') AS disposition,
+               COALESCE(o.decided_by, '') AS decided_by,
+               COALESCE(o.route, '') AS route,
+               COALESCE(o.asset_id, 0) AS asset_id,
+               s.name AS segment,
+               (SELECT COUNT(*) FROM evidence e WHERE e.observation_id=o.id)
+                 AS evidence_count,
+               (SELECT fo.finding_id FROM finding_observation fo
+                 WHERE fo.observation_id=o.id) AS finding_id
+        FROM observation o
+        JOIN segment s ON s.id=o.segment_id
+        WHERE {' AND '.join(clauses)}
+        ORDER BY o.id
+        """,
+        params,
+    ).fetchall()
+
+
+def format_observation_row(row: sqlite3.Row) -> str:
+    asset = f" A{int(row['asset_id'])}" if row["asset_id"] else ""
+    finding = (
+        f" -> {display_finding(int(row['finding_id']))}" if row["finding_id"] else ""
+    )
+    reason = f" — {clip_text(row['disposition'], 160)}" if row["disposition"] else ""
+    return (
+        f"{display_observation(int(row['id']))} {row['state']:<9} "
+        f"{row['confidence']:<10} {observation_age(row['updated_at']):>4} "
+        f"{row['family']} [{row['segment']}]{asset} evidence={row['evidence_count']}"
+        f"{finding} — {clip_text(row['title'], 200)}{reason}"
+    )
+
+
+def cmd_observation_list(args: argparse.Namespace) -> None:
+    states = (args.state,) if args.state else OBSERVATION_STATES
+    with connect() as con:
+        rows = observation_rows(con, states, args.segment, args.asset, args.family)
+    print(f"Observations ({len(rows)}, state={args.state or 'any'}):")
+    for row in rows[: args.limit]:
+        print(f"  {format_observation_row(row)}")
+    if not rows:
+        print("  none")
+    if len(rows) > args.limit:
+        print(f"  … {len(rows) - args.limit} more; increase --limit")
+
+
+def cmd_inbox(args: argparse.Namespace) -> None:
+    """The operator's review queue.
+
+    Everything an agent captured and nobody has ruled on yet. This is
+    deliberately NOT a doctor warning: an agent cannot decide when an
+    open-ended exploration is finished, so `proposed` is normal state to leave
+    behind, not drift to clear before stopping."""
+    with connect() as con:
+        rows = observation_rows(con, ("proposed",), args.segment)
+    if args.quiet and not rows:
+        return
+    print(f"Operator review queue: {len(rows)} observation(s) awaiting a decision")
+    for row in rows[: args.limit]:
+        print(f"  {format_observation_row(row)}")
+    if not rows:
+        print("  none — nothing is waiting on the operator")
+        return
+    if len(rows) > args.limit:
+        print(f"  … {len(rows) - args.limit} more; increase --limit")
+    if not args.quiet:
+        print(
+            "\nAccept:  ptctl.py finding create --observation O#### …"
+            "  (or finding attach F## --observation O####)\n"
+            "Dismiss: ptctl.py observation state O#### dismissed --reason '…'\n"
+            "Inspect: ptctl.py context resume O####"
+        )
 
 
 def cmd_observation_evidence(args: argparse.Namespace) -> None:
@@ -2297,10 +2414,11 @@ def ensure_observations_available(
             """,
             (obs_id,),
         ).fetchone()
-        if observation["state"] in {"rejected", "inconclusive", "duplicate"}:
+        if observation["state"] == "dismissed":
             raise PTError(
-                f"{display_observation(obs_id)} cannot be promoted from "
-                f"state={observation['state']}"
+                f"{display_observation(obs_id)} was dismissed; reopen it with "
+                f"'observation state {display_observation(obs_id)} proposed' "
+                "before promoting it"
             )
         if int(observation["evidence_count"]) == 0:
             raise PTError(
@@ -2444,7 +2562,8 @@ def cmd_finding_create(args: argparse.Namespace) -> None:
                 (obs_id, finding_id),
             )
             con.execute(
-                "UPDATE observation SET state='linked' WHERE id=?", (obs_id,)
+                "UPDATE observation SET state='accepted', decided_by=? WHERE id=?",
+                (decided_by(args), obs_id),
             )
         derived_asset_ids = [
             int(row["asset_id"])
@@ -2506,7 +2625,8 @@ def cmd_finding_attach(args: argparse.Namespace) -> None:
                 (obs_id, int(finding["id"])),
             )
             con.execute(
-                "UPDATE observation SET state='linked' WHERE id=?", (obs_id,)
+                "UPDATE observation SET state='accepted', decided_by=? WHERE id=?",
+                (decided_by(args), obs_id),
             )
             linked_asset = con.execute(
                 "SELECT asset_id FROM observation WHERE id=?", (obs_id,)
@@ -3051,9 +3171,18 @@ def vulnerability_http_request_warnings(
     ]
 
 
-def doctor(con: sqlite3.Connection) -> tuple[list[str], list[str]]:
+def doctor(con: sqlite3.Connection) -> tuple[list[str], list[str], list[str]]:
+    """Defects in the deliverable — never work in progress.
+
+    Everything reported here is something that would ship broken: drift between
+    the DB and the write-ups, evidence that moved or changed, an obligation left
+    on the client's systems, a finding without a replayable request. An
+    observation nobody has ruled on yet is none of those things, so it is a
+    notice (see `ptctl.py inbox`) that never blocks and never fails --strict.
+    A check that fires on normal work is a check everyone learns to ignore."""
     errors: list[str] = []
     warnings: list[str] = []
+    notices: list[str] = []
     rows = con.execute(
         """
         SELECT f.*, COALESCE(s.name, '') AS segment
@@ -3122,7 +3251,7 @@ def doctor(con: sqlite3.Connection) -> tuple[list[str], list[str]]:
             if rendered_evidence != expected_evidence:
                 errors.append(f"{label} managed evidence block drift")
         if row["lifecycle"] in ACTIVE_LIFECYCLES and not row["group_key"]:
-            errors.append(f"{label} active finding has no group_key (legacy/untriaged)")
+            errors.append(f"{label} active finding has no group_key (legacy row)")
         if row["lifecycle"] in ACTIVE_LIFECYCLES and row["segment_id"] is None:
             errors.append(f"{label} active finding has no segment")
 
@@ -3256,7 +3385,7 @@ def doctor(con: sqlite3.Connection) -> tuple[list[str], list[str]]:
 
     for row in con.execute(
         """
-        SELECT o.id, o.state,
+        SELECT o.id, o.state, COALESCE(o.disposition, '') AS disposition,
                (SELECT COUNT(*) FROM finding_observation fo
                 WHERE fo.observation_id=o.id) AS links,
                (SELECT COUNT(*) FROM evidence e
@@ -3266,17 +3395,17 @@ def doctor(con: sqlite3.Connection) -> tuple[list[str], list[str]]:
         """
     ):
         label = display_observation(int(row["id"]))
-        if row["state"] == "confirmed" and row["links"] == 0:
-            errors.append(f"{label} is confirmed but not linked to a finding")
-        if row["state"] == "linked" and row["links"] != 1:
-            errors.append(f"{label} state=linked but canonical finding link is missing")
-        if row["links"] == 1 and row["state"] != "linked":
+        if row["state"] == "accepted" and row["links"] != 1:
+            errors.append(
+                f"{label} state=accepted but the canonical finding link is missing"
+            )
+        if row["links"] == 1 and row["state"] != "accepted":
             errors.append(
                 f"{label} has a canonical finding link but state={row['state']}"
             )
-        if row["state"] in {"new", "validating", "inconclusive"}:
-            warnings.append(f"{label} remains untriaged (state={row['state']})")
-        if row["state"] in {"confirmed", "linked"} and row["evidence_count"] == 0:
+        if row["state"] == "dismissed" and not row["disposition"]:
+            warnings.append(f"{label} was dismissed without a recorded reason")
+        if row["state"] == "accepted" and row["evidence_count"] == 0:
             warnings.append(f"{label} has no registered evidence")
 
     for row in con.execute(
@@ -3400,6 +3529,20 @@ def doctor(con: sqlite3.Connection) -> tuple[list[str], list[str]]:
                     f"DB={row['status']} index={status}"
                 )
 
+    open_cleanup = con.execute(
+        "SELECT id, what FROM cleanup WHERE state='open' ORDER BY id"
+    ).fetchall()
+    if open_cleanup:
+        preview = ", ".join(
+            display_cleanup(int(row["id"])) for row in open_cleanup[:10]
+        )
+        suffix = "…" if len(open_cleanup) > 10 else ""
+        warnings.append(
+            f"{len(open_cleanup)} cleanup obligation(s) still open "
+            f"({preview}{suffix}); undo them on the target, then "
+            "`ptctl.py cleanup done C##`"
+        )
+
     journal = ROOT / "journal.md"
     if journal.is_file():
         unreferenced: list[int] = []
@@ -3419,7 +3562,16 @@ def doctor(con: sqlite3.Connection) -> tuple[list[str], list[str]]:
                 f"O/F/V reference (lines {preview}{suffix})"
             )
 
-    return errors, warnings
+    queued = con.execute(
+        "SELECT COUNT(*) AS n FROM observation WHERE state='proposed'"
+    ).fetchone()["n"]
+    if queued:
+        notices.append(
+            f"{queued} observation(s) awaiting operator review "
+            "(`ptctl.py inbox`) — a queue, not a defect"
+        )
+
+    return errors, warnings, notices
 
 
 def cmd_poc_sync(args: argparse.Namespace) -> None:
@@ -3473,23 +3625,18 @@ def cmd_poc_sync(args: argparse.Namespace) -> None:
 
 def cmd_doctor(args: argparse.Namespace) -> None:
     with connect() as con:
-        errors, warnings = doctor(con)
-    hook_blocked = args.hook and any(
-        "remains untriaged (state=new)" in message
-        or (
-            message.startswith("journal has ")
-            and "#observation entries without O/F/V reference" in message
-        )
-        or "HTTP request evidence" in message
-        for message in warnings
-    )
-    if not args.quiet or errors or warnings:
+        errors, warnings, notices = doctor(con)
+    if not args.quiet or errors or warnings or notices:
         print(f"ptctl doctor: {len(errors)} error(s), {len(warnings)} warning(s)")
         for message in errors:
             print(f"ERROR: {message}")
         for message in warnings:
             print(f"WARN: {message}")
-    if errors or (args.strict and warnings) or hook_blocked:
+        for message in notices:
+            print(f"NOTE: {message}")
+    # Notices never affect the exit code, including under --strict: the report
+    # freeze gates on the deliverable, not on how much the operator has triaged.
+    if errors or (args.strict and warnings):
         raise SystemExit(1)
 
 
@@ -3548,27 +3695,15 @@ def cmd_board(args: argparse.Namespace) -> None:
         else:
             print("Confirmed findings: none")
 
-        observations = con.execute(
-            """
-            SELECT o.id, o.state, o.family, o.title, s.name AS segment
-            FROM observation o
-            JOIN segment s ON s.id=o.segment_id
-            WHERE o.state IN ('new','validating','confirmed','inconclusive')
-            ORDER BY o.id
-            LIMIT ?
-            """,
-            (args.limit,),
-        ).fetchall()
+        observations = observation_rows(con, ("proposed",))
         if observations:
-            print("Untriaged observations:")
-            for row in observations:
-                print(
-                    f"  {display_observation(int(row['id']))} "
-                    f"{row['state']:<12} {row['family']} [{row['segment']}] — "
-                    f"{row['title']}"
-                )
+            print("Awaiting operator review:")
+            for row in observations[: args.limit]:
+                print(f"  {format_observation_row(row)}")
+            if len(observations) > args.limit:
+                print(f"  … {len(observations) - args.limit} more; increase --limit")
         else:
-            print("Untriaged observations: none")
+            print("Awaiting operator review: none")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -3578,7 +3713,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     top = parser.add_subparsers(dest="entity", required=True)
 
-    observation = top.add_parser("observation")
+    observation = top.add_parser(
+        "observation", help="capture what was seen; the operator rules on it later"
+    )
     observation_commands = observation.add_subparsers(dest="command", required=True)
 
     add = observation_commands.add_parser("add")
@@ -3595,16 +3732,48 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--target-role")
     add.add_argument("--source")
     add.add_argument("--notes")
+    add.add_argument(
+        "--confidence",
+        choices=OBSERVATION_CONFIDENCE,
+        default="suspected",
+        help="'reproduced' only if you actually reproduced it in this session",
+    )
+    add.add_argument(
+        "--from-http",
+        metavar="FILE",
+        help="saved raw HTTP request: derives --method/--route/--selector and "
+        "registers the file as http-request evidence",
+    )
     add.add_argument("--fingerprint")
     add.add_argument("--evidence", action="append", default=[])
     add.add_argument("--kind")
     add.add_argument("--description")
     add.set_defaults(func=cmd_observation_add)
 
+    observation_list = observation_commands.add_parser(
+        "list", help="read the registry back, dismissals and their reasons included"
+    )
+    observation_list.add_argument("--state", choices=OBSERVATION_STATES)
+    observation_list.add_argument("--segment")
+    observation_list.add_argument("--asset", help="A1")
+    observation_list.add_argument("--family")
+    observation_list.add_argument("--limit", type=positive_int, default=40)
+    observation_list.set_defaults(func=cmd_observation_list)
+
+    confidence = observation_commands.add_parser(
+        "confidence", help="record whether the behaviour was actually reproduced"
+    )
+    confidence.add_argument("observation", help="O0001")
+    confidence.add_argument("confidence", choices=OBSERVATION_CONFIDENCE)
+    confidence.set_defaults(func=cmd_observation_confidence)
+
     state = observation_commands.add_parser("state")
     state.add_argument("observation")
     state.add_argument("state", choices=OBSERVATION_STATES)
     state.add_argument("--reason")
+    state.add_argument(
+        "--by", help="who ruled on it; defaults to $PT_OPERATOR when set"
+    )
     state.set_defaults(func=cmd_observation_state)
 
     evidence = observation_commands.add_parser("evidence")
@@ -3634,11 +3803,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--asset", action="append", default=[], help="additional affected asset"
     )
     create.add_argument("--observation", action="append", required=True)
+    create.add_argument(
+        "--by", help="who accepted it; defaults to $PT_OPERATOR when set"
+    )
     create.set_defaults(func=cmd_finding_create)
 
     attach = finding_commands.add_parser("attach")
     attach.add_argument("finding")
     attach.add_argument("--observation", action="append", required=True)
+    attach.add_argument(
+        "--by", help="who accepted it; defaults to $PT_OPERATOR when set"
+    )
     attach.set_defaults(func=cmd_finding_attach)
 
     finding_asset = finding_commands.add_parser("asset")
@@ -3720,10 +3895,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     poc_sync.set_defaults(func=cmd_poc_sync)
 
+    inbox = top.add_parser(
+        "inbox",
+        help="observations captured by agents and still awaiting an operator decision",
+    )
+    inbox.add_argument("--segment")
+    inbox.add_argument("--limit", type=positive_int, default=25)
+    inbox.add_argument(
+        "--quiet", action="store_true", help="print nothing when the queue is empty"
+    )
+    inbox.set_defaults(func=cmd_inbox)
+
     doctor_parser = top.add_parser("doctor")
     doctor_parser.add_argument("--strict", action="store_true")
     doctor_parser.add_argument("--quiet", action="store_true")
-    doctor_parser.add_argument("--hook", action="store_true", help=argparse.SUPPRESS)
     doctor_parser.set_defaults(func=cmd_doctor)
 
     board = top.add_parser("board")
@@ -3742,11 +3927,6 @@ def build_parser() -> argparse.ArgumentParser:
     context_boot.add_argument(
         "--max-chars", type=positive_int, default=DEFAULT_BOOT_CHARS
     )
-    context_boot.add_argument(
-        "--include-rules",
-        action="store_true",
-        help="include AGENTS.md for clients that do not load it natively",
-    )
     context_boot.add_argument("--task-limit", type=positive_int, default=8)
     context_boot.set_defaults(func=cmd_context_boot)
 
@@ -3756,7 +3936,6 @@ def build_parser() -> argparse.ArgumentParser:
     context_explain.add_argument(
         "--max-chars", type=positive_int, default=DEFAULT_BOOT_CHARS
     )
-    context_explain.add_argument("--include-rules", action="store_true")
     context_explain.add_argument("--task-limit", type=positive_int, default=8)
     context_explain.set_defaults(func=cmd_context_explain)
 
@@ -3799,49 +3978,71 @@ def build_parser() -> argparse.ArgumentParser:
     )
     context_resume.set_defaults(func=cmd_context_resume)
 
-    session = top.add_parser(
-        "session", help="maintain the compact cross-session handoff"
+    cleanup = top.add_parser(
+        "cleanup", help="register and resolve what testing left on the target"
     )
-    session_commands = session.add_subparsers(dest="command", required=True)
+    cleanup_commands = cleanup.add_subparsers(dest="command", required=True)
 
-    session_start = session_commands.add_parser(
-        "start", help="open the PT session capture gate"
+    cleanup_add = cleanup_commands.add_parser(
+        "add", help="record an obligation to undo something on the target"
     )
-    session_start.add_argument("--client", default="manual")
-    session_start.add_argument("--quiet", action="store_true")
-    session_start.set_defaults(func=cmd_session_start)
+    cleanup_add.add_argument("--what", required=True)
+    cleanup_add.add_argument("--location", help="host, URL, or free-text location")
+    cleanup_add.add_argument("--asset", help="A1 — links the obligation to an asset")
+    cleanup_add.add_argument("--owner", help="who created it (agent or operator)")
+    cleanup_add.add_argument("--note")
+    cleanup_add.set_defaults(func=cmd_cleanup_add)
 
-    session_close = session_commands.add_parser(
-        "close", help="write the structured handoff after meaningful work"
+    cleanup_done = cleanup_commands.add_parser(
+        "done", help="mark one obligation resolved"
     )
-    session_close.add_argument("--focus", required=True)
-    session_close.add_argument("--completed", action="append", default=[])
-    session_close.add_argument("--live-state", action="append", default=[])
-    session_close.add_argument("--blocker", action="append", default=[])
-    session_close.add_argument("--cleanup", action="append", default=[])
-    session_close.add_argument("--next", action="append", default=[])
-    session_close.add_argument("--reference", action="append", default=[])
-    session_close.add_argument("--outcome", choices=SESSION_OUTCOMES)
-    session_close.add_argument(
-        "--assessment",
-        help="required rationale for no-finding, mixed, or administrative outcomes",
-    )
-    session_close.add_argument("--max-chars", type=positive_int, default=1800)
-    session_close.set_defaults(func=cmd_session_close)
+    cleanup_done.add_argument("reference", help="C01 or numeric id")
+    cleanup_done.add_argument("--note")
+    cleanup_done.set_defaults(func=cmd_cleanup_done)
 
-    session_delta = session_commands.add_parser(
-        "delta", help="show scans/poc and registry changes since the last handoff"
+    cleanup_list = cleanup_commands.add_parser(
+        "list", help="list open obligations (--all includes resolved ones)"
     )
-    session_delta.add_argument("--limit", type=positive_int, default=40)
-    session_delta.add_argument("--json", action="store_true")
-    session_delta.set_defaults(func=cmd_session_delta)
+    cleanup_list.add_argument("--all", action="store_true")
+    cleanup_list.set_defaults(func=cmd_cleanup_list)
 
-    session_check = session_commands.add_parser(
-        "check",
-        help="fail when canonical work or scans/poc changed after the last handoff",
+    coverage = top.add_parser(
+        "coverage", help="log what was actually tried, tries that found nothing included"
     )
-    session_check.add_argument("--quiet", action="store_true")
-    session_check.set_defaults(func=cmd_session_check)
+    coverage_commands = coverage.add_subparsers(dest="command", required=True)
+
+    coverage_add = coverage_commands.add_parser(
+        "add", help="log one attempt against a target: what you tried, in words"
+    )
+    coverage_add.add_argument("--asset", help="A1")
+    coverage_add.add_argument("--segment")
+    coverage_add.add_argument(
+        "--class",
+        dest="test_class",
+        required=True,
+        help="test class; same vocabulary as observation --family (bola, xss, …)",
+    )
+    coverage_add.add_argument(
+        "--note", help="what was actually tried, in words (required)"
+    )
+    coverage_add.add_argument("--owner")
+    coverage_add.set_defaults(func=cmd_coverage_add)
+
+    coverage_list = coverage_commands.add_parser(
+        "list", help="every recorded attempt per target and test class"
+    )
+    coverage_list.add_argument("--segment")
+    coverage_list.add_argument(
+        "--limit", type=positive_int, default=5, help="attempts shown per pair"
+    )
+    coverage_list.set_defaults(func=cmd_coverage_list)
+
+    coverage_gaps = coverage_commands.add_parser(
+        "gaps", help="assets nobody has recorded any work against"
+    )
+    coverage_gaps.add_argument("--segment")
+    coverage_gaps.add_argument("--limit", type=positive_int, default=20)
+    coverage_gaps.set_defaults(func=cmd_coverage_gaps)
     return parser
 
 

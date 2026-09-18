@@ -13,7 +13,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -f /workspace/db/ptctl.py ]; then python3 /workspace/db/ptctl.py session start --client claude --quiet && python3 /workspace/db/ptctl.py context boot --include-rules --max-chars 16000; fi"
+            "command": "if [ -f /workspace/db/ptctl.py ]; then python3 /workspace/db/ptctl.py context boot --max-chars 8000; fi"
           }
         ]
       }

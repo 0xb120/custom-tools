@@ -46,7 +46,7 @@ A fresh session deliberately starts with only:
 
 - these hard rules;
 - compact scope boundaries;
-- `.context/handoff.md`;
+- open cleanup obligations;
 - canonical registry counts;
 - a few open TODO titles.
 
@@ -68,47 +68,23 @@ There are four distinct layers:
 | Layer | Identity | Meaning |
 |---|---|---|
 | Lead | tool-native output in `scans/<segment>/` | Unvalidated candidate; not a report issue |
-| Observation | `O####` in `db/engagement.db` | One concrete test case or occurrence |
+| Observation | `O####` in `db/engagement.db` | One concrete test case you saw happen |
 | Finding | `F##` plus `findings/<slug>.md` | Confirmed technical issue grouping related observations; not automatically reportable |
 | Vulnerability | `V##` plus `vulnerabilities/<slug>.md` | Operator-approved report issue sourced from one or more findings |
 
-`db/engagement.db` is canonical for hosts, assets, credentials, observations, evidence metadata, findings, and report vulnerabilities. `db/ptctl.py` is the only supported writer for observations, findings, and vulnerabilities. Never use raw SQL for those records, copy a managed `_template.md`, edit managed metadata/evidence blocks, or edit rendered index tables by hand.
+`db/engagement.db` is canonical for hosts, assets, credentials, observations, evidence metadata, findings and vulnerabilities, and `db/ptctl.py` is the only supported writer for the last three. Never use raw SQL for those records, copy a managed `_template.md`, edit managed metadata/evidence blocks, or edit rendered index tables by hand.
 
-### Never lose a plausible issue
+### Register everything, conclude nothing
 
-As soon as manual work relies on a plausible security issue, register it before continuing:
+Register a plausible issue with `ptctl.py observation add` as soon as your work relies on it. Prefer `--from-http <saved request>`: it derives the method, route and selector and registers the `http-request` evidence every vulnerability needs. Capture is idempotent on a semantic fingerprint, and re-capturing something already dismissed prints why. For the full invocation see `PT_PLAYBOOK.md` § Capture recipes or `observation add --help`.
 
-```bash
-python3 db/ptctl.py observation add \
-  --title 'Cross-tenant read through orderId' \
-  --family BOLA --segment customer-portal --asset A1 \
-  --component orders-api --boundary cross-tenant \
-  --method GET --route '/api/orders/:id' --selector orderId \
-  --attacker-role customer --target-role customer \
-  --source 'Burp Repeater item 1842' \
-  --evidence scans/customer-portal/burp/req-1842.http \
-  --evidence scans/customer-portal/burp/res-1842.http
-```
-
-The semantic fingerprint makes repeated capture idempotent. Scanner output may remain a lead, but once manually relied on it must become an observation or receive an explicit rejected/inconclusive disposition.
+An observation states a fact you can vouch for: this happened. `--confidence reproduced` only if you reproduced it here; otherwise it stays `suspected`. Every observation starts `proposed` and **the operator decides what becomes of it**: you never mark your own work accepted, and you are never asked to declare a line of testing finished. Stopping with observations still queued is the normal end of a session — `ptctl.py inbox` is what you hand over. Dismiss only what you can show is not real, and only with a reason (`observation state O#### dismissed --reason '<why>'`); `observation list --state dismissed` is what has already been ruled out.
 
 ### Group occurrences into technical findings
 
-Promote only a confirmed observation with registered evidence:
+An observation enters the report by being promoted into a finding with `ptctl.py finding create`, which requires registered evidence and a `--group-key`.
 
-```bash
-python3 db/ptctl.py finding create \
-  --slug cross-tenant-order-access \
-  --group-key 'orders-api|object-authorization|cross-tenant' \
-  --title 'Cross-tenant access to orders' --severity HIGH \
-  --cwe CWE-639 --segment customer-portal --observation O0001
-```
-
-The `group_key` identifies the violated control, trust boundary/root cause, and remediation owner. Different endpoints, object types, parameters, or JSON fields are normally additional observations:
-
-```bash
-python3 db/ptctl.py finding attach F01 --observation O0002
-```
+The `group_key` identifies the violated control, trust boundary/root cause, and remediation owner. Different endpoints, object types, parameters, or JSON fields are normally additional observations, attached to the existing finding with `finding attach F## --observation O####`.
 
 Keep issues separate when authorization boundary, exploit preconditions, impact, root cause, or required fix materially differs. A shared CWE alone is not enough to group. If the related-profile guard finds an existing candidate, inspect it and attach to it; use `--allow-related` only for a genuinely different root cause/remediation and record the decision in `journal.md`.
 
@@ -133,60 +109,45 @@ python3 db/ptctl.py vulnerability create \
   --finding F01 --finding F03
 ```
 
-Use `vulnerability attach V01 --finding F04` for later additions and `vulnerability update` for report metadata. Each finding may source only one vulnerability. The report index renders only `vulnerabilities`; unpromoted findings must never appear.
+Use `vulnerability attach V01 --finding F04` for later additions and `vulnerability update` for report metadata. Each finding sources at most one vulnerability. The report index renders only `vulnerabilities`; unpromoted findings never appear.
 
 ### Evidence is immutable
 
 Register evidence with the observation commands. After registration, never modify the file in place: capture a new file and register it. Evidence bodies remain out of general context and are loaded only for the selected `O####`/`F##`/`V##`.
 
-Before stopping, every observation must be linked, rejected/inconclusive with a reason, or explicitly left in `validating`:
-
-```bash
-python3 db/ptctl.py observation state O0005 validating
-python3 db/ptctl.py observation state O0006 rejected --reason 'scanner false positive'
-python3 db/ptctl.py doctor
-```
+`ptctl.py doctor` reports defects in the deliverable — drift, altered evidence, open cleanup — never the review queue. `doctor --strict` is the reporting-freeze gate.
 
 ### References are mandatory
 
-Every promoted vulnerability's `## References` section must cite at least 3 external references; every reference must be a link (a URL), and at least one must come from `cheatsheetseries.owasp.org` or `portswigger.net/web-security`. `db/ptctl.py doctor` reports shortfalls as a warning; `doctor --strict` (the pre-report gate) treats them as errors. Finding references remain optional until promotion.
+Every promoted vulnerability's `## References` section must cite at least 3 external references, each a URL, at least one from `cheatsheetseries.owasp.org` or `portswigger.net/web-security`. `doctor --strict` gates it. Finding references stay optional until promotion.
 
 ### A complete HTTP request is mandatory evidence
 
-Every promoted vulnerability must resolve through its source findings to at least one complete, unredacted HTTP request (`--kind http-request`) whose file contains a valid request line. Capture it while it is fresh. For a genuinely non-HTTP vulnerability, opt out in the vulnerability write-up with `<!-- no-http-request: <reason> -->`.
+Every vulnerability must resolve through its source findings to at least one complete, unredacted HTTP request (`--kind http-request`), so the client can replay it at patch time. `doctor` reports a shortfall; `doctor --strict` (the pre-report gate) fails until every promoted vulnerability resolves to one whose file has a valid request line. Capture it while it is fresh; for a genuinely non-HTTP vulnerability, opt out with `<!-- no-http-request: <reason> -->` in the write-up.
 
 ### Report formatting
 
-Report prose is copy-paste-ready Markdown: one paragraph is one continuous line, never hard-wrapped mid-sentence — the renderer wraps it. Every fenced code block must open with a language (```` ```sh ````, ```` ```http ````, ```` ```json ````; ```` ```text ```` when nothing else fits). Nothing is ever indented, with a single exception: a nested list item, indented with spaces and never a tab. Everything else starts at column 0 — fences, prose, tables — including the content that belongs to a bullet or a numbered reproduction step. A `PostToolUse` hook rejects a finding/vulnerability write-up or `<activity>.md` edit that breaks any of these.
+Report prose is copy-paste-ready Markdown: one paragraph per line, a language on every code fence, indentation only for nested list items. The `PostToolUse` hook `check-report-format.sh` rejects an offending write-up or `<activity>.md` edit with the line numbers; `PT_PLAYBOOK.md` § Finding write-up requirements has them in full.
 
-## Session continuity
+## Continuity and concurrent sessions
+
+Other agents may be working this engagement at the same time. There is no per-session state file and no handoff document: `db/engagement.db` is the only state shared between sessions, and it takes concurrent writers. Assume work you did not do yourself may have appeared since you started; re-read rather than remember, and never assume a target is untouched because your own session has not touched it.
 
 `TODO.md` contains pending actions, grouped under `## <segment>` and written as Markdown checkboxes. Update it immediately as work emerges or completes. `journal.md` contains dated hypotheses, dead ends, decisions, and analysis—not tasks.
 
 Every journal `#observation` entry must reference its `O####`, `F##`, or `V##`. Journal entries are append-only; supersede an old conclusion with a new dated entry. Tag machines as `@<stable-name>`.
 
-At the end of meaningful work, write a bounded handoff:
+### Record what you tried, not only what you found
 
-```bash
-python3 db/ptctl.py session close \
-  --focus 'authorization testing on orders API' \
-  --outcome captured \
-  --completed 'confirmed O0001 and attached it to F01' \
-  --live-state 'Burp Repeater tab 1842 contains the authenticated request' \
-  --next 'test write/delete operations with the same tenant pair' \
-  --reference F01
-```
+A line of testing that found nothing is engagement knowledge, and the observation registry has nowhere to put it. Log the attempt itself with `ptctl.py coverage add --asset <A##> --class <family> --note '<what you actually tried>'`, as you close it.
 
-SessionStart opens a capture-gate marker, so every Claude/Codex session must end with one explicit outcome even when testing happened only through Burp MCP and produced no local file. `session delta` also compares `scans/` and `poc/` against the previous handoff, including added, modified, and deleted files:
+The mandatory note is the record: write what you actually tried. There is deliberately no verdict field: "this class is clean here" is a claim about a search with no natural end. `--class` uses the same vocabulary as `observation --family`. The log is append-only and nothing supersedes anything, so two sessions probing the same class both keep their attempt. Read it back with `coverage list`, and use `coverage gaps` for assets nobody has recorded work against. A gap is a question, not a task: it says nobody recorded work there, not that work is owed.
 
-- `captured` — requires an `O####`/`F##`/`V##` reference created or updated during this session;
-- `no-finding` — requires `--assessment` describing what was tested and why it was negative;
-- `mixed` — requires both a changed canonical reference and an assessment of the negative portion;
-- `administrative` — requires `--assessment` explaining why the file change was not testing.
+### Register what you leave behind
 
-Never reuse an old finding reference to dismiss new output. When unsure, run `python3 db/ptctl.py session delta` and register a new observation before closing.
+Anything testing changed on the target and owes the client back — an account created, a file dropped, a configuration changed, a user locked out — goes in the cleanup register the moment you do it, never at the end: `ptctl.py cleanup add --what '<change>' --asset <A##> --owner <you>`, and `cleanup done C##` once it is undone.
 
-The Stop hook runs both `doctor` and `session check`. If DB, TODO, journal, activity index, finding/vulnerability prose, `scans/`, or `poc/` changed after the handoff, refresh the handoff and resolve the capture gate before ending. Keep it factual: assessment, completed work, live state, blockers, cleanup obligations, next work, and canonical references—not a second journal.
+Open obligations load into every session's bootstrap and `doctor --strict` refuses to pass while any remain. This is the one thing no query can rediscover, because it describes state outside the workspace.
 
 ## Host and asset identity
 
@@ -196,4 +157,4 @@ Always **target by name**, not by IP, once a stable name is known. Use an IP onl
 
 Raw SQL is allowed for inventory and credentials; render afterward with `bash db/render.sh`. Vulnerabilities, findings, and observations always go through `ptctl.py`. Report prose must be valid Markdown and follow *Report formatting* above; `<activity>.md` indexes must not be edited by hand.
 
-Consult `PT_PLAYBOOK.md` only when severity definitions, inventory SQL, saved queries, report fields, or detailed storage conventions are needed.
+Consult `PT_PLAYBOOK.md` only when capture syntax, severity definitions, inventory SQL, saved queries, report fields, or detailed storage conventions are needed.
