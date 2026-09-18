@@ -11,7 +11,7 @@
 #      indented fence turns into an indented-code block or nests inside the
 #      surrounding list, which breaks copy-paste and the report renderer.
 #
-# Scope: *.md under findings/ and the root-level <activity>.md (identified by
+# Scope: *.md under findings/ or vulnerabilities/ and the root-level <activity>.md (identified by
 # its db:render markers, not by name). Working files — journal.md, TODO.md,
 # AGENTS.md, the _template.md / finding.md reference — are exempt.
 #
@@ -48,11 +48,11 @@ case "$file" in
     */_template.md|*/finding.md) exit 0 ;;
 esac
 
-# In scope only for report prose: a file under findings/, or the root
+# In scope only for report prose: a file under findings/ or vulnerabilities/, or the root
 # <activity>.md (the only .md carrying the db:render markers).
 in_scope=0
 case "$file" in
-    */findings/*.md|findings/*.md) in_scope=1 ;;
+    */findings/*.md|findings/*.md|*/vulnerabilities/*.md|vulnerabilities/*.md) in_scope=1 ;;
 esac
 if [ "$in_scope" -eq 0 ] && grep -qF '<!-- db:render' "$file" 2>/dev/null; then
     in_scope=1

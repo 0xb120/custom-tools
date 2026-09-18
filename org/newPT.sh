@@ -145,15 +145,15 @@ miro@claude-plugins-official"
 # session of the engagement, used or not.
 type_plugins() {
     case "$1" in
-        web)      echo "burpsuite-project-parser@trailofbits fp-check@trailofbits playwright@claude-plugins-official code-review@claude-plugins-official" ;;
-        external) echo "burpsuite-project-parser@trailofbits fp-check@trailofbits playwright@claude-plugins-official code-review@claude-plugins-official" ;;
-        internal) echo "fp-check@trailofbits" ;;
-        cloud)    echo "fp-check@trailofbits supply-chain-risk-auditor@trailofbits" ;;
-        mobile)   echo "fp-check@trailofbits audit-context-building@trailofbits variant-analysis@trailofbits code-review@claude-plugins-official \
+        web)      echo "burpsuite-project-parser@trailofbits playwright@claude-plugins-official code-review@claude-plugins-official" ;;
+        external) echo "burpsuite-project-parser@trailofbits playwright@claude-plugins-official code-review@claude-plugins-official" ;;
+        internal) echo "" ;;
+        cloud)    echo "supply-chain-risk-auditor@trailofbits" ;;
+        mobile)   echo "audit-context-building@trailofbits variant-analysis@trailofbits code-review@claude-plugins-official \
                         claude-security@claude-plugins-official firebase-apk-scanner@trailofbits supply-chain-risk-auditor@trailofbits" ;;
-        code)     echo "audit-context-building@trailofbits variant-analysis@trailofbits static-analysis@trailofbits fp-check@trailofbits code-review@claude-plugins-official \
+        code)     echo "audit-context-building@trailofbits variant-analysis@trailofbits static-analysis@trailofbits code-review@claude-plugins-official \
                         claude-security@claude-plugins-official supply-chain-risk-auditor@trailofbits trailmark@trailofbits" ;;
-        full)     echo "burpsuite-project-parser@trailofbits fp-check@trailofbits playwright@claude-plugins-official code-review@claude-plugins-official \
+        full)     echo "burpsuite-project-parser@trailofbits playwright@claude-plugins-official code-review@claude-plugins-official \
                         audit-context-building@trailofbits variant-analysis@trailofbits static-analysis@trailofbits claude-security@claude-plugins-official \
                         firebase-apk-scanner@trailofbits supply-chain-risk-auditor@trailofbits trailmark@trailofbits" ;;
         lite)     echo "" ;;
@@ -213,7 +213,7 @@ for marketplace in $BASE_MARKETPLACES; do
 done
 
 # Create the folder structure
-mkdir -p "$activity_name"/{attachments,scans,poc,findings,wl,logs}
+mkdir -p "$activity_name"/{attachments,scans,poc,findings,vulnerabilities,wl,logs}
 
 # The command audit log (written by the .claude/hooks/log-command.sh hook) can
 # embed secrets (sprayed passwords, auth headers, SSH keys). Keep logs/ out of
@@ -226,7 +226,7 @@ touch "$activity_name"/out-of-scope.txt
 touch "$activity_name"/journal.md
 touch "$activity_name"/TODO.md
 
-# Activity notes / findings index — copy template and inject the activity name
+# Activity notes / vulnerability report index — copy template and inject the activity name
 cp "$template_dir/activity.md" "$activity_name"/"$activity_name".md
 sed -i "s|{{ACTIVITY_NAME}}|$activity_name|g" "$activity_name"/"$activity_name".md
 
@@ -235,8 +235,10 @@ cp "$template_dir/AGENTS.md" "$activity_name"/AGENTS.md
 cp "$template_dir/PT_PLAYBOOK.md" "$activity_name"/PT_PLAYBOOK.md
 cp "$template_dir/CLAUDE.md" "$activity_name"/CLAUDE.md
 
-# Per-finding reference template — ptctl copies it atomically when promoting an observation.
+# Managed write-up templates. Findings capture confirmed technical issues;
+# vulnerabilities are the explicit allowlist of issues that enter the report.
 cp "$template_dir/finding.md" "$activity_name"/findings/_template.md
+cp "$template_dir/vulnerability.md" "$activity_name"/vulnerabilities/_template.md
 
 # Kickoff notes — operator pastes raw notes here; the LLM reads them at the
 # first session to auto-populate AGENTS.md placeholders.
@@ -244,7 +246,7 @@ cp "$template_dir/_init_notes.txt" "$activity_name"/_init_notes.txt
 
 # Engagement SQLite DB: schema, transactional PT registry, render script, and
 # saved query snippets. DB is the source of truth for observations, evidence,
-# assets, credentials, and finding metadata.
+# assets, credentials, finding metadata, and report vulnerabilities.
 mkdir -p "$activity_name/db/queries"
 cp "$template_dir/db/schema.sql"  "$activity_name/db/schema.sql"
 cp "$template_dir/db/render.sh"   "$activity_name/db/render.sh"
@@ -435,6 +437,7 @@ Next steps:
   python3 db/ptctl.py context explain           # audit the small session bootstrap
   python3 db/ptctl.py context pending           # list all open work on demand
   python3 db/ptctl.py board                     # full canonical registry, on demand
+  python3 db/ptctl.py vulnerability --help      # select/merge report vulnerabilities
   python3 db/ptctl.py doctor                    # check DB / Markdown / evidence drift
   ./yolo.sh                                    # one-shot: build/start container + Claude in YOLO mode (--dangerously-skip-permissions)
   ./yolo-codex.sh                              # same, but launches Codex (--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust)

@@ -96,8 +96,8 @@ if "${PT[@]}" finding asset F01 --remove A1 >"$TMP/remove-derived.out" 2>&1; the
 fi
 grep -q 'linked observation' "$TMP/remove-derived.out" || \
     fail "derived-asset rejection should explain the invariant"
-grep -q 'F01' engagement.md || fail "finding index was not rendered"
-pass "one command atomically creates DB row, write-up, PoC, and index"
+grep -q 'F01' engagement.md && fail "unpromoted finding leaked into report index"
+pass "one command atomically creates technical state without report promotion"
 
 # A new occurrence cannot be attached until its proof has been registered.
 printf 'GET /api/orders/101?customerId=2 HTTP/1.1\n' \
@@ -179,13 +179,24 @@ grep -q 'related observation profile already belongs to F01' \
     fail "duplicate finding reached the DB"
 board="$("${PT[@]}" board)"
 echo "$board" | grep -q 'occurrences=3' || fail "board should show three occurrences"
-pass "semantic group_key prevents duplicate report findings"
+pass "semantic group_key prevents duplicate technical findings"
 
-# The references rule (>=3 links, every reference a link, >=1 from a priority
-# domain) is a doctor warning fatal under --strict, so replace the canonical
-# finding's placeholder references with compliant links before the checks below.
-sed -i '/^## References/,$d' findings/cross-tenant-order-access.md
-cat >> findings/cross-tenant-order-access.md <<'REF'
+# Explicitly promote F01. Only V01 now enters the report index; its prose is a
+# copy of the finding and remains independently editable after promotion.
+"${PT[@]}" vulnerability promote F01 >/dev/null || fail "promotion failed"
+[ "$(sqlite3 db/engagement.db 'SELECT COUNT(*) FROM vulnerabilities;')" = 1 ] || \
+    fail "vulnerability row missing"
+test -f vulnerabilities/cross-tenant-order-access.md || \
+    fail "promoted vulnerability write-up missing"
+grep -q 'Source finding(s).*F01' vulnerabilities/cross-tenant-order-access.md || \
+    fail "vulnerability provenance missing"
+grep -q '| V01 | MEDIUM' engagement.md || \
+    fail "promoted vulnerability was not rendered"
+grep -q '| F01 |' engagement.md && fail "finding ID leaked into report index"
+
+# Report-only reference policy is enforced on the promoted vulnerability.
+sed -i '/^## References/,$d' vulnerabilities/cross-tenant-order-access.md
+cat >> vulnerabilities/cross-tenant-order-access.md <<'REF'
 ## References
 
 - https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html
@@ -193,32 +204,33 @@ cat >> findings/cross-tenant-order-access.md <<'REF'
 - https://cwe.mitre.org/data/definitions/639.html
 REF
 
-# Canonical updates repair DB, write-up, and rendered index together.
-"${PT[@]}" finding update F01 --severity HIGH >/dev/null
-[ "$(sqlite3 db/engagement.db 'SELECT severity FROM finding WHERE id=1;')" = HIGH ] || \
-    fail "DB severity did not update"
-grep -q 'Severity.*`HIGH`' findings/cross-tenant-order-access.md || \
-    fail "Markdown severity did not update"
-grep -q '| F01 | HIGH' engagement.md || fail "rendered severity did not update"
+# Canonical vulnerability updates repair DB, write-up, and report index together
+# without rewriting the underlying finding's independent assessment.
+"${PT[@]}" vulnerability update V01 --severity HIGH >/dev/null
+[ "$(sqlite3 db/engagement.db 'SELECT severity FROM vulnerabilities WHERE id=1;')" = HIGH ] || \
+    fail "vulnerability severity did not update"
+grep -q 'Severity.*`HIGH`' vulnerabilities/cross-tenant-order-access.md || \
+    fail "vulnerability Markdown severity did not update"
+grep -q '| V01 | HIGH' engagement.md || fail "rendered severity did not update"
 if ! doctor_out="$("${PT[@]}" doctor --strict 2>&1)"; then
     echo "$doctor_out" >&2
     fail "clean engagement failed strict doctor"
 fi
 
 sed -i 's/- \*\*Severity\*\*: `HIGH`/- **Severity**: `LOW`/' \
-    findings/cross-tenant-order-access.md
+    vulnerabilities/cross-tenant-order-access.md
 if "${PT[@]}" doctor >"$TMP/drift.out" 2>&1; then
     fail "doctor should fail on DB/Markdown severity drift"
 fi
 grep -q 'Severity drift' "$TMP/drift.out" || fail "doctor did not name severity drift"
-"${PT[@]}" finding update F01 --severity HIGH >/dev/null
+"${PT[@]}" vulnerability update V01 --severity HIGH >/dev/null
 if ! doctor_out="$("${PT[@]}" doctor --strict 2>&1)"; then
     echo "$doctor_out" >&2
     fail "ptctl update did not repair drift"
 fi
 
 sed -i 's/res-1842.http/res-unregistered.http/' \
-    findings/cross-tenant-order-access.md
+    vulnerabilities/cross-tenant-order-access.md
 if "${PT[@]}" doctor >"$TMP/evidence-block.out" 2>&1; then
     fail "doctor should fail when the managed evidence block is edited"
 fi
@@ -265,7 +277,7 @@ state="$(sqlite3 db/engagement.db \
 [ "$(sqlite3 db/engagement.db \
     'SELECT COUNT(*) FROM finding_observation WHERE finding_id=1;')" = 4 ] || \
     fail "merge did not move every occurrence"
-grep -q 'F02' engagement.md && fail "merged F02 should not remain in report index"
+grep -q '| F02 |' engagement.md && fail "technical F02 leaked into report index"
 test -f findings/cross-tenant-order-export.md || \
     fail "merged source write-up should be retained"
 if ! doctor_out="$("${PT[@]}" doctor --strict 2>&1)"; then
@@ -281,7 +293,7 @@ if printf '{}' | CLAUDE_PROJECT_DIR="$PWD" \
     bash .claude/hooks/engagement-doctor.sh >"$TMP/journal-hook.out" 2>&1; then
     fail "Stop hook should block a journal observation with no O/F identity"
 fi
-grep -q '#observation entries without O/F reference' "$TMP/journal-hook.out" || \
+grep -q '#observation entries without O/F/V reference' "$TMP/journal-hook.out" || \
     fail "Stop hook did not explain the unregistered journal observation"
 sed -i 's/#observation /#observation F01 /' journal.md
 "${PT[@]}" session close \

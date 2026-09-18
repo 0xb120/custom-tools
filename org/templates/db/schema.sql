@@ -1,5 +1,5 @@
 -- Engagement database. Source of truth for assets, credentials, observations,
--- evidence metadata, and finding metadata. Markdown projections are rendered
+-- evidence metadata, finding metadata, and report vulnerabilities. Markdown projections are rendered
 -- from this DB — do not edit those tables or managed blocks by hand.
 
 PRAGMA foreign_keys = ON;
@@ -180,8 +180,60 @@ BEGIN
 END;
 
 -- ---------------------------------------------------------------------------
+-- Vulnerabilities: the report allowlist. Only rows in this table are rendered
+-- into the report index. A vulnerability may promote one finding verbatim or
+-- consolidate several findings that share one report-level narrative/remedy.
+-- Full prose lives in vulnerabilities/<slug>.md.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS vulnerabilities (
+  id            INTEGER PRIMARY KEY,
+  slug          TEXT NOT NULL UNIQUE,
+  group_key     TEXT NOT NULL,
+  title         TEXT NOT NULL,
+  severity      TEXT NOT NULL CHECK (severity IN ('CRITICAL','HIGH','MEDIUM','LOW','INFORMATIONAL')),
+  status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','fixed','non-reproducible')),
+  cwe           TEXT,
+  segment_id    INTEGER NOT NULL REFERENCES segment(id),
+  evidence_path TEXT,                       -- auto-defaults to vulnerabilities/<slug>.md
+  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- One finding can feed only one report vulnerability. This prevents the same
+-- technical issue from being counted twice while allowing one vulnerability
+-- to consolidate any number of findings.
+CREATE TABLE IF NOT EXISTS vulnerability_finding (
+  finding_id       INTEGER PRIMARY KEY REFERENCES finding(id) ON DELETE RESTRICT,
+  vulnerability_id INTEGER NOT NULL REFERENCES vulnerabilities(id) ON DELETE CASCADE,
+  linked_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_vulnerability_severity ON vulnerabilities(severity);
+CREATE INDEX IF NOT EXISTS idx_vulnerability_status   ON vulnerabilities(status);
+CREATE INDEX IF NOT EXISTS idx_vulnerability_finding_vulnerability
+  ON vulnerability_finding(vulnerability_id);
+
+CREATE TRIGGER IF NOT EXISTS vulnerability_touch_updated_at
+AFTER UPDATE ON vulnerabilities
+FOR EACH ROW
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+  UPDATE vulnerabilities SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS vulnerability_default_path
+AFTER INSERT ON vulnerabilities
+FOR EACH ROW
+WHEN NEW.evidence_path IS NULL
+BEGIN
+  UPDATE vulnerabilities
+  SET evidence_path = 'vulnerabilities/' || NEW.slug || '.md'
+  WHERE id = NEW.id;
+END;
+
+-- ---------------------------------------------------------------------------
 -- Observations: one row per concrete test case / occurrence. An observation is
--- captured immediately, before deciding whether it deserves a report finding.
+-- captured immediately, before deciding whether it deserves a technical finding.
 -- Exact duplicate test cases collapse on `fingerprint`; several observations
 -- can then be grouped under one finding through finding_observation.
 -- ---------------------------------------------------------------------------
@@ -221,7 +273,7 @@ BEGIN
   UPDATE observation SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
 END;
 
--- A concrete occurrence belongs to at most one canonical report finding.
+-- A concrete occurrence belongs to at most one canonical technical finding.
 CREATE TABLE IF NOT EXISTS finding_observation (
   observation_id INTEGER PRIMARY KEY REFERENCES observation(id) ON DELETE CASCADE,
   finding_id     INTEGER NOT NULL REFERENCES finding(id) ON DELETE CASCADE,

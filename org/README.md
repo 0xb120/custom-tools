@@ -71,15 +71,16 @@ The important generated paths are:
 ├── out-of-scope.txt
 ├── TODO.md
 ├── journal.md
-├── <activity>.md             # rendered inventory and findings index
+├── <activity>.md             # rendered inventory and report-vulnerability index
 ├── attachments/              # client-provided material and credentials
 ├── scans/<segment>/          # tool-native output and captured exchanges
 ├── poc/<finding-slug>/       # curated reproduction artifacts
 ├── findings/                 # one managed write-up per canonical finding
+├── vulnerabilities/          # only operator-selected issues that enter the report
 ├── wl/                       # discovered identities/secrets; keep private
 ├── db/
 │   ├── engagement.db         # canonical structured engagement state
-│   ├── ptctl.py              # observation, finding, context, and session CLI
+│   ├── ptctl.py              # observation, finding, vulnerability, context, and session CLI
 │   ├── render.sh
 │   ├── whatweknow.sh
 │   └── queries/
@@ -143,20 +144,22 @@ python3 db/ptctl.py context focus --topic 'orders authorization'
 # Load prior conclusions only after forming an independent plan.
 python3 db/ptctl.py context history --topic 'orders authorization'
 
-# Resume one known observation or finding; evidence files are listed, not inlined.
+# Resume one known observation, finding, or report vulnerability; evidence files are listed, not inlined.
 python3 db/ptctl.py context resume O0001
 python3 db/ptctl.py context resume F01
+python3 db/ptctl.py context resume V01
 ```
 
-## Canonical observations and findings
+## Canonical observations, findings, and report vulnerabilities
 
-The control plane separates unvalidated leads, concrete observations, and report findings:
+The control plane separates unvalidated leads, concrete observations, confirmed technical findings, and the explicit report allowlist:
 
 | Layer | Identity | Meaning |
 |---|---|---|
 | Lead | Tool-native file under `scans/<segment>/` | Candidate that has not been validated |
 | Observation | `O####` in `db/engagement.db` | One concrete occurrence/test case with registered evidence |
-| Finding | `F##` plus `findings/<slug>.md` | One report issue grouping related observations |
+| Finding | `F##` plus `findings/<slug>.md` | Confirmed technical issue grouping related observations; internal by default |
+| Vulnerability | `V##` plus `vulnerabilities/<slug>.md` | Operator-selected report issue sourced from one or more findings |
 
 Register an observation as soon as manual work relies on a plausible issue:
 
@@ -172,7 +175,7 @@ python3 db/ptctl.py observation add \
   --evidence scans/customer-portal/burp/res-1842.http
 ```
 
-Promote a confirmed observation with registered evidence:
+Group a confirmed observation with registered evidence into a technical finding:
 
 ```bash
 python3 db/ptctl.py finding create \
@@ -183,7 +186,20 @@ python3 db/ptctl.py finding create \
   --segment customer-portal --observation O0001
 ```
 
-`ptctl.py` owns observation/finding writes, managed finding metadata, evidence blocks, PoC paths, and index rendering. Do not replace those operations with raw SQL or hand-edit a rendered index. Raw SQL remains supported for inventory and credentials; run `bash db/render.sh` afterward.
+Findings do not enter the report automatically. Select a single finding 1:1, or consolidate several findings under a new report narrative:
+
+```bash
+python3 db/ptctl.py vulnerability promote F01
+
+python3 db/ptctl.py vulnerability create \
+  --slug consolidated-access-control \
+  --group-key 'portal|access-control|shared-remediation' \
+  --title 'Insufficient access control across portal workflows' \
+  --severity HIGH --cwe CWE-862 \
+  --finding F01 --finding F03
+```
+
+`ptctl.py` owns observation/finding/vulnerability writes, managed metadata, evidence blocks, PoC paths, and report-index rendering. Do not replace those operations with raw SQL or hand-edit a rendered index. Raw SQL remains supported for inventory and credentials; run `bash db/render.sh` afterward.
 
 Useful checks:
 
@@ -294,12 +310,12 @@ Plugins are declared in two places, both at the top of `newPT.sh`. `BASE_PLUGINS
 
 | Type | Adds on top of the base set |
 | --- | --- |
-| `web` | `burpsuite-project-parser`, `fp-check`, `playwright`, `code-review` |
-| `external` | `burpsuite-project-parser`, `fp-check`, `playwright`, `code-review` |
-| `internal` | `fp-check` |
-| `cloud` | `fp-check`, `supply-chain-risk-auditor` |
-| `mobile` | `fp-check`, `audit-context-building`, `variant-analysis`, `code-review`, `claude-security`, `firebase-apk-scanner`, `supply-chain-risk-auditor` |
-| `code` | `audit-context-building`, `variant-analysis`, `static-analysis`, `fp-check`, `code-review`, `claude-security`, `supply-chain-risk-auditor`, `trailmark` |
+| `web` | `burpsuite-project-parser`, `playwright`, `code-review` |
+| `external` | `burpsuite-project-parser`, `playwright`, `code-review` |
+| `internal` | — |
+| `cloud` | `supply-chain-risk-auditor` |
+| `mobile` | `audit-context-building`, `variant-analysis`, `code-review`, `claude-security`, `firebase-apk-scanner`, `supply-chain-risk-auditor` |
+| `code` | `audit-context-building`, `variant-analysis`, `static-analysis`, `code-review`, `claude-security`, `supply-chain-risk-auditor`, `trailmark` |
 | `full` | every one of the above |
 | `lite`, `none` | — (base set only) |
 
@@ -313,6 +329,8 @@ bash ~/custom-tools/org/sync-agent-plugins.sh /workspace             # apply it
 ```
 
 `postCreateCommand` runs it at container creation; run it again by hand after editing the list, then restart the agent — plugins load at session start. It applies the same list to Codex (`codex plugin add`), whose plugins are container-global since Codex has no project scope. Marketplaces are cloned over HTTPS (`CLAUDE_CODE_PLUGIN_PREFER_HTTPS`), so a public one needs no credentials inside the container.
+
+`fp-check@trailofbits` is retired globally. The sync step removes it from both Claude and Codex and scrubs stale declarations from older engagement settings, so re-running sync upgrades existing containers as well as keeping new scaffolds clean.
 
 Keep the lists short: every enabled plugin costs always-on context in every session of the engagement. Enablement is driven entirely by `enabledPlugins` — a plugin with no entry there is inactive, and one set to `false` is declared but off. Settings precedence is user < project < local < flag < policy.
 

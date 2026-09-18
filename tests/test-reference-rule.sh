@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests the finding "references" + "evidence links" rules enforced/rendered by ptctl:
+# Tests the report-vulnerability "references" + "evidence links" rules:
 #   - >=3 external references (each a line bearing an http(s):// URL) in ## References
 #   - every reference list item must contain a link
 #   - at least one reference from cheatsheetseries.owasp.org or portswigger.net/web-security
@@ -22,7 +22,7 @@ bash "$NEWPT" none engagement >/dev/null || fail "could not scaffold engagement"
 cd engagement
 PT=(python3 db/ptctl.py)
 
-W="findings/xss.md"
+W="vulnerabilities/xss.md"
 # Replace the whole ## References section (drops template placeholders) with the
 # given bullet lines. References is the last section of the write-up.
 set_refs() {
@@ -44,8 +44,9 @@ printf 'GET / HTTP/1.1\n' > scans/web/req.http
 "${PT[@]}" finding create --slug xss --group-key 'xss|reflected|web' \
     --title 'Reflected XSS' --severity MEDIUM --segment web \
     --observation O0001 >/dev/null || fail "finding create failed"
+"${PT[@]}" vulnerability promote F01 >/dev/null || fail "promotion failed"
 
-# --- Test 1: a fresh finding (placeholder refs, no links) warns but does NOT block ---
+# --- Test 1: a fresh report vulnerability warns but does NOT block ---
 out="$("${PT[@]}" doctor 2>&1)" \
     || fail "plain doctor must stay non-blocking (exit 0) on a references warning"
 echo "$out" | grep -qi 'external reference' \

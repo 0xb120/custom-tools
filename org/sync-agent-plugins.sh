@@ -89,6 +89,12 @@ fi
 # clone). Over HTTPS a public marketplace needs no credentials at all.
 export CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1
 
+# Plugins retired from every engagement. Keep this denylist here as well as
+# removing them from newPT.sh: existing workspaces may still declare or cache
+# an old plugin, and sync must converge those installations instead of
+# reinstalling it from stale project settings.
+RETIRED_PLUGINS="fp-check@trailofbits"
+
 # name<TAB>source — source is whatever `plugin marketplace add` accepts: a
 # GitHub owner/repo, an HTTPS URL, or a local path.
 MARKETPLACES="$(jq -r '
@@ -101,13 +107,20 @@ MARKETPLACES="$(jq -r '
 PLUGINS="$(jq -r '
     (.enabledPlugins // {}) | to_entries[]
     | select(.value != false and .value != null) | .key
-' "$SETTINGS")"
+' "$SETTINGS" | while IFS= read -r plugin; do
+    case " $RETIRED_PLUGINS " in
+        *" $plugin "*) ;;
+        *) printf '%s\n' "$plugin" ;;
+    esac
+done)"
 
-if [ -z "$PLUGINS" ] && [ -z "$MARKETPLACES" ]; then
-    echo "[=] $SETTINGS declares no marketplaces and no plugins — nothing to do."
-    echo "    Add them under \"extraKnownMarketplaces\" / \"enabledPlugins\"."
-    exit 0
-fi
+RETIRED_DECLARED=0
+for plugin in $RETIRED_PLUGINS; do
+    if jq -e --arg plugin "$plugin" \
+        '(.enabledPlugins // {}) | has($plugin)' "$SETTINGS" >/dev/null; then
+        RETIRED_DECLARED=1
+    fi
+done
 
 # A declared marketplace with no enabled plugin is not a no-op: registering it is
 # what lets `/plugin` browse it and `plugin install <x>@<name>` resolve the name
@@ -152,6 +165,10 @@ if [ "$DO_CLAUDE" -eq 1 ]; then
 fi
 if [ "$DO_CLAUDE" -eq 1 ]; then
     echo "[+] Claude Code"
+    for plugin in $RETIRED_PLUGINS; do
+        run_quiet claude plugin uninstall "$plugin" --scope project -y || \
+            echo "    [=] retired plugin already absent: $plugin"
+    done
     while IFS=$'\t' read -r name source; do
         [ -n "$name" ] || continue
         if [ -z "$source" ]; then
@@ -185,6 +202,10 @@ if [ "$DO_CODEX" -eq 1 ]; then
 fi
 if [ "$DO_CODEX" -eq 1 ]; then
     echo "[+] Codex"
+    for plugin in $RETIRED_PLUGINS; do
+        run_quiet codex plugin remove "$plugin" || \
+            echo "    [=] retired plugin already absent: $plugin"
+    done
     while IFS=$'\t' read -r name source; do
         [ -n "$name" ] && [ -n "$source" ] || continue
         run_quiet codex plugin marketplace add "$source" || \
@@ -196,6 +217,25 @@ if [ "$DO_CODEX" -eq 1 ]; then
         run_quiet codex plugin add "$plugin" || \
             echo "    [=] codex plugin add did not apply: $plugin"
     done <<< "$PLUGINS"
+fi
+
+# The CLI removals clear installed state; this final pass also scrubs stale or
+# disabled declarations when an agent CLI was unavailable. Preserve every
+# unrelated settings key and write atomically in the engagement directory.
+if [ "$RETIRED_DECLARED" -eq 1 ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+        for plugin in $RETIRED_PLUGINS; do
+            echo "    would remove retired declaration: $plugin"
+        done
+    else
+        settings_tmp="$(mktemp "$DIR/.claude/settings.json.retired.XXXXXX")"
+        jq --arg retired "$RETIRED_PLUGINS" '
+            .enabledPlugins = ((.enabledPlugins // {})
+              | with_entries(select(.key as $key | ($retired | split(" ") | index($key) | not))))
+        ' "$SETTINGS" > "$settings_tmp"
+        chmod --reference="$SETTINGS" "$settings_tmp"
+        mv "$settings_tmp" "$SETTINGS"
+    fi
 fi
 
 # --- Verify -----------------------------------------------------------------

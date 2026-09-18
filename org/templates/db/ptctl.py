@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Transactional finding/observation registry for a PT engagement workspace."""
+"""Transactional observation/finding/vulnerability registry for a PT workspace."""
 
 from __future__ import annotations
 
@@ -51,6 +51,7 @@ REQUIRED_MD_LABELS = (
     "Segment",
     "Observation(s)",
 )
+VULNERABILITY_MD_LABELS = REQUIRED_MD_LABELS + ("Source finding(s)",)
 EVIDENCE_START = "<!-- ptctl:evidence -->"
 EVIDENCE_END = "<!-- /ptctl:evidence -->"
 FAMILY_ALIASES = {
@@ -191,6 +192,51 @@ def ensure_schema(con: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_evidence_observation
           ON evidence(observation_id);
+
+        CREATE TABLE IF NOT EXISTS vulnerabilities (
+          id            INTEGER PRIMARY KEY,
+          slug          TEXT NOT NULL UNIQUE,
+          group_key     TEXT NOT NULL,
+          title         TEXT NOT NULL,
+          severity      TEXT NOT NULL CHECK (severity IN ('CRITICAL','HIGH','MEDIUM','LOW','INFORMATIONAL')),
+          status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','fixed','non-reproducible')),
+          cwe           TEXT,
+          segment_id    INTEGER NOT NULL REFERENCES segment(id),
+          evidence_path TEXT,
+          created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS vulnerability_finding (
+          finding_id        INTEGER PRIMARY KEY REFERENCES finding(id) ON DELETE RESTRICT,
+          vulnerability_id  INTEGER NOT NULL REFERENCES vulnerabilities(id) ON DELETE CASCADE,
+          linked_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_vulnerability_severity
+          ON vulnerabilities(severity);
+        CREATE INDEX IF NOT EXISTS idx_vulnerability_status
+          ON vulnerabilities(status);
+        CREATE INDEX IF NOT EXISTS idx_vulnerability_finding_vulnerability
+          ON vulnerability_finding(vulnerability_id);
+
+        CREATE TRIGGER IF NOT EXISTS vulnerability_touch_updated_at
+        AFTER UPDATE ON vulnerabilities
+        FOR EACH ROW
+        WHEN NEW.updated_at = OLD.updated_at
+        BEGIN
+          UPDATE vulnerabilities SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS vulnerability_default_path
+        AFTER INSERT ON vulnerabilities
+        FOR EACH ROW
+        WHEN NEW.evidence_path IS NULL
+        BEGIN
+          UPDATE vulnerabilities
+          SET evidence_path = 'vulnerabilities/' || NEW.slug || '.md'
+          WHERE id = NEW.id;
+        END;
         """
     )
     con.commit()
@@ -281,8 +327,31 @@ def finding_row(con: sqlite3.Connection, ref: str) -> sqlite3.Row:
     return row
 
 
+def vulnerability_row(con: sqlite3.Connection, ref: str) -> sqlite3.Row:
+    match = re.fullmatch(r"[Vv](\d+)", ref)
+    if match:
+        row = con.execute(
+            "SELECT * FROM vulnerabilities WHERE id=?", (int(match.group(1)),)
+        ).fetchone()
+    elif ref.isdigit():
+        row = con.execute(
+            "SELECT * FROM vulnerabilities WHERE id=?", (int(ref),)
+        ).fetchone()
+    else:
+        row = con.execute(
+            "SELECT * FROM vulnerabilities WHERE slug=?", (ref,)
+        ).fetchone()
+    if row is None:
+        raise PTError(f"vulnerability '{ref}' not found")
+    return row
+
+
 def display_finding(value: int) -> str:
     return f"F{value:02d}"
+
+
+def display_vulnerability(value: int) -> str:
+    return f"V{value:02d}"
 
 
 def display_observation(value: int) -> str:
@@ -479,6 +548,95 @@ def affected_assets(con: sqlite3.Connection, finding_id: int) -> str:
     return ", ".join(values) if values else "<unlinked>"
 
 
+def vulnerability_finding_refs(con: sqlite3.Connection, vulnerability_id: int) -> str:
+    ids = [
+        display_finding(int(row["finding_id"]))
+        for row in con.execute(
+            """
+            SELECT finding_id
+            FROM vulnerability_finding
+            WHERE vulnerability_id=?
+            ORDER BY finding_id
+            """,
+            (vulnerability_id,),
+        )
+    ]
+    return ", ".join(ids) if ids else "<none>"
+
+
+def vulnerability_observation_refs(
+    con: sqlite3.Connection, vulnerability_id: int
+) -> str:
+    ids = [
+        display_observation(int(row["observation_id"]))
+        for row in con.execute(
+            """
+            SELECT DISTINCT fo.observation_id
+            FROM vulnerability_finding vf
+            JOIN finding_observation fo ON fo.finding_id=vf.finding_id
+            WHERE vf.vulnerability_id=?
+            ORDER BY fo.observation_id
+            """,
+            (vulnerability_id,),
+        )
+    ]
+    return ", ".join(ids) if ids else "<none>"
+
+
+def vulnerability_affected_assets(
+    con: sqlite3.Connection, vulnerability_id: int
+) -> str:
+    rows = con.execute(
+        """
+        SELECT DISTINCT a.id, h.name AS host, a.port,
+                        COALESCE(a.protocol, '') AS protocol
+        FROM vulnerability_finding vf
+        JOIN finding_asset fa ON fa.finding_id=vf.finding_id
+        JOIN asset a ON a.id=fa.asset_id
+        JOIN host h ON h.id=a.host_id
+        WHERE vf.vulnerability_id=?
+        ORDER BY h.name, a.port
+        """,
+        (vulnerability_id,),
+    ).fetchall()
+    if rows:
+        values = []
+        for row in rows:
+            protocol = f"/{row['protocol']}" if row["protocol"] else ""
+            values.append(f"A{int(row['id'])} {row['host']}:{row['port']}{protocol}")
+        return ", ".join(values)
+    return "<unlinked>"
+
+
+def vulnerability_evidence_markdown(
+    con: sqlite3.Connection, vulnerability_id: int
+) -> str:
+    rows = con.execute(
+        """
+        SELECT DISTINCT e.path, e.kind, COALESCE(e.description, '') AS description,
+                        o.id AS observation_id
+        FROM vulnerability_finding vf
+        JOIN finding_observation fo ON fo.finding_id=vf.finding_id
+        JOIN observation o ON o.id=fo.observation_id
+        JOIN evidence e ON e.observation_id=o.id
+        WHERE vf.vulnerability_id=?
+        ORDER BY o.id, e.id
+        """,
+        (vulnerability_id,),
+    ).fetchall()
+    if not rows:
+        return "_No registered evidence yet — link a finding with registered evidence._"
+    lines = []
+    for row in rows:
+        suffix = f" — {row['description']}" if row["description"] else ""
+        path = row["path"]
+        lines.append(
+            f"- [{path}](../{path}) ({row['kind']}, "
+            f"{display_observation(int(row['observation_id']))}){suffix}"
+        )
+    return "\n".join(lines)
+
+
 def initial_writeup(con: sqlite3.Connection, row: sqlite3.Row) -> str:
     template_path = ROOT / "findings" / "_template.md"
     if not template_path.is_file():
@@ -500,6 +658,43 @@ def initial_writeup(con: sqlite3.Connection, row: sqlite3.Row) -> str:
     for old, new in replacements.items():
         text = text.replace(old, new)
     text = replace_evidence_block(text, evidence_markdown(con, int(row["id"])))
+    return text
+
+
+def initial_vulnerability_writeup(
+    con: sqlite3.Connection, row: sqlite3.Row, source_text: str | None = None
+) -> str:
+    if source_text is None:
+        template_path = ROOT / "vulnerabilities" / "_template.md"
+        if not template_path.is_file():
+            # Compatibility for an in-flight workspace upgraded by replacing
+            # ptctl.py before its scaffold files are refreshed.
+            template_path = ROOT / "findings" / "_template.md"
+        if not template_path.is_file():
+            raise PTError(f"{template_path} not found")
+        text = template_path.read_text(encoding="utf-8")
+    else:
+        text = source_text
+    replacements = {
+        "# <Title>": f"# {row['title']}",
+        "`<vulnerability_slug>`": f"`{row['slug']}`",
+        "`<finding_slug>`": f"`{row['slug']}`",
+        "`<group_key>`": f"`{row['group_key']}`",
+        "`<CRITICAL | HIGH | MEDIUM | LOW | INFORMATIONAL>`": f"`{row['severity']}`",
+        "`<open | fixed | non-reproducible>`": f"`{row['status']}`",
+        "`<host / URL / endpoint / parameter / binary — one per line if multiple>`": (
+            vulnerability_affected_assets(con, int(row["id"]))
+        ),
+        "`<CWE-NNN: short name>`": row["cwe"] or "`<fill CWE>`",
+        "`<segment-name from AGENTS.md>`": f"`{segment_name(con, row['segment_id'])}`",
+        "`<F01, F02>`": vulnerability_finding_refs(con, int(row["id"])),
+        "`<O0001, O0002>`": vulnerability_observation_refs(con, int(row["id"])),
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    text = replace_evidence_block(
+        text, vulnerability_evidence_markdown(con, int(row["id"]))
+    )
     return text
 
 
@@ -562,6 +757,54 @@ def sync_finding_markdown(con: sqlite3.Connection, finding_id: int) -> None:
         text = replace_label(text, label, value)
     text = replace_evidence_block(text, evidence_markdown(con, finding_id))
     write_atomic(path, text)
+
+
+def sync_vulnerability_markdown(
+    con: sqlite3.Connection, vulnerability_id: int
+) -> None:
+    row = con.execute(
+        """
+        SELECT v.*, s.name AS segment
+        FROM vulnerabilities v
+        JOIN segment s ON s.id=v.segment_id
+        WHERE v.id=?
+        """,
+        (vulnerability_id,),
+    ).fetchone()
+    if row is None:
+        raise PTError(f"vulnerability {vulnerability_id} not found")
+    path = ROOT / (
+        row["evidence_path"] or f"vulnerabilities/{row['slug']}.md"
+    )
+    if not path.is_file():
+        raise PTError(f"vulnerability write-up missing: {path.relative_to(ROOT)}")
+    text = path.read_text(encoding="utf-8")
+    text = re.sub(r"^# .*$", f"# {row['title']}", text, count=1, flags=re.MULTILINE)
+    values = {
+        "Vuln_ID": f"`{row['slug']}`",
+        "Group key": f"`{row['group_key']}`",
+        "Severity": f"`{row['severity']}`",
+        "Status": f"`{row['status']}`",
+        "Affected asset(s)": vulnerability_affected_assets(con, vulnerability_id),
+        "Related CWE(s)": row["cwe"] or "`<fill CWE>`",
+        "Segment": f"`{row['segment']}`",
+        "Source finding(s)": vulnerability_finding_refs(con, vulnerability_id),
+        "Observation(s)": vulnerability_observation_refs(con, vulnerability_id),
+    }
+    for label, value in values.items():
+        text = replace_label(text, label, value)
+    text = replace_evidence_block(
+        text, vulnerability_evidence_markdown(con, vulnerability_id)
+    )
+    write_atomic(path, text)
+
+
+def sync_linked_vulnerabilities(con: sqlite3.Connection, finding_id: int) -> None:
+    for row in con.execute(
+        "SELECT vulnerability_id FROM vulnerability_finding WHERE finding_id=?",
+        (finding_id,),
+    ):
+        sync_vulnerability_markdown(con, int(row["vulnerability_id"]))
 
 
 def render_report() -> None:
@@ -672,6 +915,9 @@ def scope_summary() -> str:
 
 
 def registry_summary(con: sqlite3.Connection) -> str:
+    vulnerabilities = int(
+        con.execute("SELECT COUNT(*) AS n FROM vulnerabilities").fetchone()["n"]
+    )
     finding_counts = {
         row["lifecycle"]: int(row["n"])
         for row in con.execute(
@@ -694,6 +940,7 @@ def registry_summary(con: sqlite3.Connection) -> str:
         for state in ("new", "validating", "confirmed", "inconclusive")
     )
     lines = [
+        f"- Report vulnerabilities: {vulnerabilities}",
         f"- Active findings: {active_findings}",
         f"- Merged/rejected findings: "
         f"{finding_counts.get('merged', 0) + finding_counts.get('rejected', 0)}",
@@ -743,7 +990,7 @@ def build_bounded_context(
     manifest = (
         "\n\n--- Context policy ---\n"
         "Loaded now: hard rules, scope, handoff, registry counts, compact open tasks.\n"
-        "Not loaded: journal prose, finding write-ups, evidence bodies, scans, "
+        "Not loaded: journal prose, finding/vulnerability write-ups, evidence bodies, scans, "
         "completed TODO history.\n"
         "After the human chooses a target, form an independent test plan first; "
         "then use `context focus`, `context history`, or `context resume`."
@@ -808,6 +1055,7 @@ def cmd_context_explain(args: argparse.Namespace) -> None:
         counts = con.execute(
             """
             SELECT
+              (SELECT COUNT(*) FROM vulnerabilities) AS vulnerabilities,
               (SELECT COUNT(*) FROM finding) AS findings,
               (SELECT COUNT(*) FROM observation) AS observations,
               (SELECT COUNT(*) FROM evidence) AS evidence
@@ -836,12 +1084,13 @@ def cmd_context_explain(args: argparse.Namespace) -> None:
     )
     print(f"- TODO.md: open titles only ({len(open_tasks())} open)")
     print(
-        f"- registry: counts only ({counts['findings']} findings, "
+        f"- registry: counts only ({counts['vulnerabilities']} report vulnerabilities, "
+        f"{counts['findings']} findings, "
         f"{counts['observations']} observations, {counts['evidence']} evidence)"
     )
     print("Excluded:")
     print("- journal.md prose")
-    print("- finding write-ups and report prose")
+    print("- finding/vulnerability write-ups and report prose")
     print("- evidence contents, scans, and Burp history")
     print("- completed TODO history")
 
@@ -862,7 +1111,9 @@ def cmd_context_pending(args: argparse.Namespace) -> None:
 
 def matching_registry_rows(
     con: sqlite3.Connection, terms: list[str], segment: str | None
-) -> tuple[list[sqlite3.Row], list[sqlite3.Row], list[sqlite3.Row]]:
+) -> tuple[
+    list[sqlite3.Row], list[sqlite3.Row], list[sqlite3.Row], list[sqlite3.Row]
+]:
     assets = con.execute(
         """
         SELECT a.id, h.name AS host, a.port, COALESCE(a.protocol, '') AS protocol,
@@ -896,6 +1147,15 @@ def matching_registry_rows(
         ORDER BY f.id
         """
     ).fetchall()
+    vulnerabilities = con.execute(
+        """
+        SELECT v.id, v.slug, v.group_key, v.title, v.severity,
+               COALESCE(v.cwe, '') AS cwe, s.name AS segment
+        FROM vulnerabilities v
+        JOIN segment s ON s.id=v.segment_id
+        ORDER BY v.id
+        """
+    ).fetchall()
 
     def selected(row: sqlite3.Row, fields: Iterable[str]) -> bool:
         if segment:
@@ -926,6 +1186,11 @@ def matching_registry_rows(
             for row in findings
             if selected(row, ("slug", "group_key", "title", "cwe", "segment"))
         ],
+        [
+            row
+            for row in vulnerabilities
+            if selected(row, ("slug", "group_key", "title", "cwe", "segment"))
+        ],
     )
 
 
@@ -934,7 +1199,7 @@ def cmd_context_focus(args: argparse.Namespace) -> None:
     if not terms:
         raise PTError("--topic must contain searchable terms")
     with connect() as con:
-        assets, observations, findings = matching_registry_rows(
+        assets, observations, findings, vulnerabilities = matching_registry_rows(
             con, terms, args.segment
         )
     tasks = [
@@ -947,7 +1212,7 @@ def cmd_context_focus(args: argparse.Namespace) -> None:
         f"FOCUS DOSSIER — topic={args.topic!r}"
         + (f" segment={args.segment}" if args.segment else ""),
         "",
-        "This is a post-plan orientation view. Journal prose, finding prose, "
+        "This is a post-plan orientation view. Journal and finding/vulnerability prose, "
         "evidence bodies, and scans remain excluded.",
         "",
         f"Open tasks ({len(tasks)}):",
@@ -965,7 +1230,10 @@ def cmd_context_focus(args: argparse.Namespace) -> None:
     )
     if not assets:
         lines.append("- none")
-    lines.append(f"\nRegistry pointers ({len(observations)} observations, {len(findings)} findings):")
+    lines.append(
+        f"\nRegistry pointers ({len(observations)} observations, "
+        f"{len(findings)} findings, {len(vulnerabilities)} vulnerabilities):"
+    )
     lines.extend(
         f"- {display_observation(int(row['id']))} state={row['state']} "
         f"{row['family']} [{row['segment']}] {row['component']} {row['route']}"
@@ -976,11 +1244,16 @@ def cmd_context_focus(args: argparse.Namespace) -> None:
         f"group_key={row['group_key']} [{row['segment']}]"
         for row in findings[: args.limit]
     )
-    if not observations and not findings:
+    lines.extend(
+        f"- {display_vulnerability(int(row['id']))} report "
+        f"severity={row['severity']} [{row['segment']}]"
+        for row in vulnerabilities[: args.limit]
+    )
+    if not observations and not findings and not vulnerabilities:
         lines.append("- none")
     lines.append(
         "\nFor prior conclusions run `context history`; to resume one canonical "
-        "item run `context resume F##|O####`."
+        "item run `context resume V##|F##|O####`."
     )
     print(clip_text("\n".join(lines), args.max_chars))
 
@@ -1000,7 +1273,9 @@ def cmd_context_history(args: argparse.Namespace) -> None:
     if not terms:
         raise PTError("--topic must contain searchable terms")
     with connect() as con:
-        _, observations, findings = matching_registry_rows(con, terms, args.segment)
+        _, observations, findings, vulnerabilities = matching_registry_rows(
+            con, terms, args.segment
+        )
     journal = journal_matches(terms, args.limit)
     lines = [
         f"HISTORY — topic={args.topic!r}"
@@ -1017,6 +1292,14 @@ def cmd_context_history(args: argparse.Namespace) -> None:
         for row in findings[: args.limit]
     )
     if not findings:
+        lines.append("- none")
+    lines.append(f"\nReport vulnerabilities ({len(vulnerabilities)}):")
+    lines.extend(
+        f"- {display_vulnerability(int(row['id']))} {row['severity']} "
+        f"[{row['group_key']}] — {row['title']}"
+        for row in vulnerabilities[: args.limit]
+    )
+    if not vulnerabilities:
         lines.append("- none")
     lines.append(f"\nObservations ({len(observations)}):")
     lines.extend(
@@ -1104,6 +1387,64 @@ def finding_resume_context(
     return clip_text("\n".join(lines), max_chars)
 
 
+def vulnerability_resume_context(
+    con: sqlite3.Connection, row: sqlite3.Row, max_chars: int
+) -> str:
+    vulnerability_id = int(row["id"])
+    findings = con.execute(
+        """
+        SELECT f.id, f.slug, f.title, f.severity
+        FROM vulnerability_finding vf
+        JOIN finding f ON f.id=vf.finding_id
+        WHERE vf.vulnerability_id=?
+        ORDER BY f.id
+        """,
+        (vulnerability_id,),
+    ).fetchall()
+    evidence = con.execute(
+        """
+        SELECT DISTINCT e.path, e.kind, e.sha256, o.id AS observation_id
+        FROM vulnerability_finding vf
+        JOIN finding_observation fo ON fo.finding_id=vf.finding_id
+        JOIN observation o ON o.id=fo.observation_id
+        JOIN evidence e ON e.observation_id=o.id
+        WHERE vf.vulnerability_id=?
+        ORDER BY o.id, e.id
+        """,
+        (vulnerability_id,),
+    ).fetchall()
+    ref = display_vulnerability(vulnerability_id)
+    writeup = ROOT / (
+        row["evidence_path"] or f"vulnerabilities/{row['slug']}.md"
+    )
+    lines = [
+        f"RESUME {ref} — {row['title']}",
+        f"- group_key: {row['group_key']}",
+        f"- severity/status: {row['severity']} / {row['status']}",
+        f"- segment: {segment_name(con, row['segment_id'])}",
+        f"- source findings: {vulnerability_finding_refs(con, vulnerability_id)}",
+        f"- affected: {vulnerability_affected_assets(con, vulnerability_id)}",
+        f"- observations: {vulnerability_observation_refs(con, vulnerability_id)}",
+        "",
+        "Source finding dossiers:",
+    ]
+    lines.extend(
+        f"- {display_finding(int(item['id']))} {item['severity']} "
+        f"{item['slug']} — {item['title']}"
+        for item in findings
+    )
+    lines.append("\nEvidence registry:")
+    lines.extend(
+        f"- {display_observation(int(item['observation_id']))}: "
+        f"{item['path']} ({item['kind']}, sha256={item['sha256'][:12]}…)"
+        for item in evidence
+    )
+    if not evidence:
+        lines.append("- none")
+    lines.append("\nVulnerability write-up:\n" + (read_text(writeup) or "<missing>"))
+    return clip_text("\n".join(lines), max_chars)
+
+
 def observation_resume_context(
     con: sqlite3.Connection, observation_ref: str, max_chars: int
 ) -> str:
@@ -1165,6 +1506,13 @@ def observation_resume_context(
 
 def cmd_context_resume(args: argparse.Namespace) -> None:
     with connect() as con:
+        if re.fullmatch(r"[Vv]\d+", args.reference):
+            print(
+                vulnerability_resume_context(
+                    con, vulnerability_row(con, args.reference), args.max_chars
+                )
+            )
+            return
         if re.fullmatch(r"[Oo]\d+", args.reference):
             print(observation_resume_context(con, args.reference, args.max_chars))
             return
@@ -1276,6 +1624,18 @@ def registry_snapshot(con: sqlite3.Connection) -> dict[str, object]:
         str(row["id"]): row_digest(row)
         for row in con.execute("SELECT * FROM finding ORDER BY id")
     }
+    vulnerabilities = {
+        str(row["id"]): row_digest(row)
+        for row in con.execute(
+            """
+            SELECT v.*, COALESCE(GROUP_CONCAT(vf.finding_id, ','), '') AS finding_ids
+            FROM vulnerabilities v
+            LEFT JOIN vulnerability_finding vf ON vf.vulnerability_id=v.id
+            GROUP BY v.id
+            ORDER BY v.id
+            """
+        )
+    }
     evidence = {
         str(row["id"]): {
             "observation_id": int(row["observation_id"]),
@@ -1299,6 +1659,7 @@ def registry_snapshot(con: sqlite3.Connection) -> dict[str, object]:
         "database_sha256": database_digest(con),
         "observations": observations,
         "findings": findings,
+        "vulnerabilities": vulnerabilities,
         "evidence": evidence,
     }
 
@@ -1425,6 +1786,7 @@ def registry_delta_refs(
         previous: dict[str, object] = {
             "observations": {},
             "findings": {},
+            "vulnerabilities": {},
             "evidence": {},
         }
     else:
@@ -1436,6 +1798,7 @@ def registry_delta_refs(
     for entity, formatter in (
         ("observations", display_observation),
         ("findings", display_finding),
+        ("vulnerabilities", display_vulnerability),
     ):
         old_rows = previous.get(entity, {})
         new_rows = current.get(entity, {})
@@ -1521,12 +1884,16 @@ def delta_count_summary(delta: dict[str, object]) -> str:
 def canonical_references(values: Iterable[str]) -> list[str]:
     refs: set[str] = set()
     for value in values:
-        for prefix, number in re.findall(r"\b([FfOo])(\d+)\b", value):
+        for prefix, number in re.findall(r"\b([FfOoVv])(\d+)\b", value):
             item_id = int(number)
             refs.add(
                 display_finding(item_id)
                 if prefix.lower() == "f"
-                else display_observation(item_id)
+                else (
+                    display_vulnerability(item_id)
+                    if prefix.lower() == "v"
+                    else display_observation(item_id)
+                )
             )
     return sorted(refs, key=lambda ref: (ref[0], int(ref[1:])))
 
@@ -1535,7 +1902,9 @@ def validate_canonical_references(
     con: sqlite3.Connection, refs: Iterable[str]
 ) -> None:
     for ref in refs:
-        if ref.startswith("F"):
+        if ref.startswith("V"):
+            vulnerability_row(con, ref)
+        elif ref.startswith("F"):
             finding_row(con, ref)
         else:
             observation_id(con, ref)
@@ -1560,7 +1929,7 @@ def validate_capture_gate(
         )
         raise PTError(
             f"capture gate: {trigger}. Run `ptctl.py session delta`, then "
-            "close with `--outcome captured --reference O####|F##`, "
+            "close with `--outcome captured --reference O####|F##|V##`, "
             "`--outcome no-finding --assessment '…'`, `--outcome mixed ...`, "
             "or `--outcome administrative --assessment '…'`"
         )
@@ -1569,7 +1938,7 @@ def validate_capture_gate(
     if outcome in {"captured", "mixed"}:
         if not refs:
             raise PTError(
-                f"--outcome {outcome} requires a canonical O####/F## --reference"
+                f"--outcome {outcome} requires a canonical O####/F##/V## --reference"
             )
         changed_refs = set(delta["registry_refs"])
         if not changed_refs.intersection(refs):
@@ -1690,6 +2059,13 @@ def canonical_mutation_paths() -> list[Path]:
         paths.extend(
             path for path in findings_dir.glob("*.md") if path.name != "_template.md"
         )
+    vulnerabilities_dir = ROOT / "vulnerabilities"
+    if vulnerabilities_dir.is_dir():
+        paths.extend(
+            path
+            for path in vulnerabilities_dir.glob("*.md")
+            if path.name != "_template.md"
+        )
     return [path for path in paths if path.exists()]
 
 
@@ -1805,7 +2181,9 @@ def cmd_observation_add(args: argparse.Namespace) -> None:
                 "SELECT finding_id FROM finding_observation WHERE observation_id=?",
                 (obs_id,),
             ):
-                sync_finding_markdown(con, int(row["finding_id"]))
+                finding_id = int(row["finding_id"])
+                sync_finding_markdown(con, finding_id)
+                sync_linked_vulnerabilities(con, finding_id)
             con.commit()
             print(
                 f"{display_observation(obs_id)} already exists "
@@ -1897,6 +2275,7 @@ def cmd_observation_evidence(args: argparse.Namespace) -> None:
         ]
         for finding_id in linked:
             sync_finding_markdown(con, finding_id)
+            sync_linked_vulnerabilities(con, finding_id)
         con.commit()
         print(f"{display_observation(obs_id)} evidence_added={added}")
 
@@ -2141,6 +2520,7 @@ def cmd_finding_attach(args: argparse.Namespace) -> None:
                     (int(finding["id"]), int(linked_asset)),
                 )
         sync_finding_markdown(con, int(finding["id"]))
+        sync_linked_vulnerabilities(con, int(finding["id"]))
         con.commit()
         print(
             f"attached {','.join(display_observation(value) for value in obs_ids)} "
@@ -2191,6 +2571,7 @@ def cmd_finding_asset(args: argparse.Namespace) -> None:
                 (finding_id, linked_asset_id),
             )
         sync_finding_markdown(con, finding_id)
+        sync_linked_vulnerabilities(con, finding_id)
         con.commit()
         print(
             f"updated assets for {display_finding(finding_id)}: "
@@ -2218,6 +2599,20 @@ def cmd_finding_update(args: argparse.Namespace) -> None:
             updates["group_key"] = normalize_group_key(args.group_key)
         if args.segment is not None:
             new_segment_id = segment_id(con, args.segment)
+            linked_vulnerability = con.execute(
+                """
+                SELECT v.id, v.segment_id
+                FROM vulnerability_finding vf
+                JOIN vulnerabilities v ON v.id=vf.vulnerability_id
+                WHERE vf.finding_id=?
+                """,
+                (int(finding["id"]),),
+            ).fetchone()
+            if linked_vulnerability and int(linked_vulnerability["segment_id"]) != new_segment_id:
+                raise PTError(
+                    f"finding belongs to {display_vulnerability(int(linked_vulnerability['id']))}; "
+                    "its segment cannot diverge from the report vulnerability"
+                )
             linked_ids = [
                 int(row["observation_id"])
                 for row in con.execute(
@@ -2264,6 +2659,40 @@ def cmd_finding_merge(args: argparse.Namespace) -> None:
 
         source_id = int(source["id"])
         target_id = int(target["id"])
+        source_link = con.execute(
+            "SELECT vulnerability_id FROM vulnerability_finding WHERE finding_id=?",
+            (source_id,),
+        ).fetchone()
+        target_link = con.execute(
+            "SELECT vulnerability_id FROM vulnerability_finding WHERE finding_id=?",
+            (target_id,),
+        ).fetchone()
+        if (
+            source_link
+            and target_link
+            and int(source_link["vulnerability_id"])
+            != int(target_link["vulnerability_id"])
+        ):
+            raise PTError(
+                "cannot merge findings that belong to different report vulnerabilities"
+            )
+        affected_vulnerabilities = {
+            int(link["vulnerability_id"])
+            for link in (source_link, target_link)
+            if link is not None
+        }
+        if source_link:
+            con.execute(
+                "DELETE FROM vulnerability_finding WHERE finding_id=?", (source_id,)
+            )
+            if not target_link:
+                con.execute(
+                    """
+                    INSERT INTO vulnerability_finding (finding_id, vulnerability_id)
+                    VALUES (?, ?)
+                    """,
+                    (target_id, int(source_link["vulnerability_id"])),
+                )
         con.execute(
             "UPDATE finding_observation SET finding_id=? WHERE finding_id=?",
             (target_id, source_id),
@@ -2286,6 +2715,8 @@ def cmd_finding_merge(args: argparse.Namespace) -> None:
         )
         sync_finding_markdown(con, source_id)
         sync_finding_markdown(con, target_id)
+        for vulnerability_id in affected_vulnerabilities:
+            sync_vulnerability_markdown(con, vulnerability_id)
         con.commit()
         render_report()
         print(
@@ -2294,9 +2725,222 @@ def cmd_finding_merge(args: argparse.Namespace) -> None:
         )
 
 
-def parse_markdown_metadata(text: str) -> dict[str, str]:
+def ensure_findings_promotable(
+    con: sqlite3.Connection, refs: Iterable[str]
+) -> list[sqlite3.Row]:
+    rows = [finding_row(con, ref) for ref in refs]
+    ids = [int(row["id"]) for row in rows]
+    if not rows:
+        raise PTError("at least one --finding is required")
+    if len(ids) != len(set(ids)):
+        raise PTError("the same finding was supplied more than once")
+    for row in rows:
+        if row["lifecycle"] != "confirmed":
+            raise PTError(
+                f"{display_finding(int(row['id']))} lifecycle={row['lifecycle']}; "
+                "only confirmed findings can enter the report"
+            )
+        existing = con.execute(
+            """
+            SELECT v.id, v.slug
+            FROM vulnerability_finding vf
+            JOIN vulnerabilities v ON v.id=vf.vulnerability_id
+            WHERE vf.finding_id=?
+            """,
+            (int(row["id"]),),
+        ).fetchone()
+        if existing:
+            raise PTError(
+                f"{display_finding(int(row['id']))} already belongs to "
+                f"{display_vulnerability(int(existing['id']))} ({existing['slug']})"
+            )
+    segments = {int(row["segment_id"]) for row in rows}
+    if len(segments) != 1:
+        raise PTError("findings from different segments cannot be combined")
+    return rows
+
+
+def create_vulnerability(
+    con: sqlite3.Connection,
+    *,
+    slug: str,
+    group_key: str,
+    title: str,
+    severity: str,
+    status: str,
+    cwe: str | None,
+    segment: int,
+    findings: list[sqlite3.Row],
+    source_text: str | None = None,
+) -> int:
+    slug = clean_single_line(slug, "slug") or ""
+    if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug):
+        raise PTError("slug must be lowercase kebab-case")
+    if con.execute("SELECT 1 FROM vulnerabilities WHERE slug=?", (slug,)).fetchone():
+        raise PTError(f"vulnerability slug '{slug}' already exists")
+    title = clean_single_line(title, "title") or ""
+    if not title:
+        raise PTError("title is required")
+    cursor = con.execute(
+        """
+        INSERT INTO vulnerabilities
+          (slug, group_key, title, severity, status, cwe, segment_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            slug,
+            normalize_group_key(group_key),
+            title,
+            severity.upper(),
+            status,
+            clean_single_line(cwe, "CWE"),
+            segment,
+        ),
+    )
+    vulnerability_id = int(cursor.lastrowid)
+    for finding in findings:
+        con.execute(
+            """
+            INSERT INTO vulnerability_finding (finding_id, vulnerability_id)
+            VALUES (?, ?)
+            """,
+            (int(finding["id"]), vulnerability_id),
+        )
+    row = con.execute(
+        "SELECT * FROM vulnerabilities WHERE id=?", (vulnerability_id,)
+    ).fetchone()
+    path = ROOT / (
+        row["evidence_path"] or f"vulnerabilities/{row['slug']}.md"
+    )
+    if path.exists():
+        raise PTError(f"refusing to overwrite existing {path.relative_to(ROOT)}")
+    content = initial_vulnerability_writeup(con, row, source_text)
+    try:
+        write_atomic(path, content)
+        sync_vulnerability_markdown(con, vulnerability_id)
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    return vulnerability_id
+
+
+def cmd_vulnerability_promote(args: argparse.Namespace) -> None:
+    with connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        findings = ensure_findings_promotable(con, [args.finding])
+        finding = findings[0]
+        source_path = ROOT / (
+            finding["evidence_path"] or f"findings/{finding['slug']}.md"
+        )
+        if not source_path.is_file():
+            raise PTError(f"finding write-up missing: {source_path.relative_to(ROOT)}")
+        vulnerability_id = create_vulnerability(
+            con,
+            slug=args.slug or finding["slug"],
+            group_key=args.group_key or finding["group_key"],
+            title=args.title or finding["title"],
+            severity=args.severity or finding["severity"],
+            status=args.status or finding["status"],
+            cwe=args.cwe if args.cwe is not None else finding["cwe"],
+            segment=int(finding["segment_id"]),
+            findings=findings,
+            source_text=source_path.read_text(encoding="utf-8"),
+        )
+        con.commit()
+        render_report()
+        print(
+            f"promoted {display_finding(int(finding['id']))} to "
+            f"{display_vulnerability(vulnerability_id)}"
+        )
+
+
+def cmd_vulnerability_create(args: argparse.Namespace) -> None:
+    with connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        findings = ensure_findings_promotable(con, args.finding)
+        vulnerability_id = create_vulnerability(
+            con,
+            slug=args.slug,
+            group_key=args.group_key,
+            title=args.title,
+            severity=args.severity,
+            status=args.status,
+            cwe=args.cwe,
+            segment=int(findings[0]["segment_id"]),
+            findings=findings,
+        )
+        con.commit()
+        render_report()
+        print(
+            f"created {display_vulnerability(vulnerability_id)} from "
+            + ",".join(display_finding(int(row["id"])) for row in findings)
+        )
+
+
+def cmd_vulnerability_attach(args: argparse.Namespace) -> None:
+    with connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        vulnerability = vulnerability_row(con, args.vulnerability)
+        findings = ensure_findings_promotable(con, args.finding)
+        if any(
+            int(row["segment_id"]) != int(vulnerability["segment_id"])
+            for row in findings
+        ):
+            raise PTError("finding segment differs from the vulnerability segment")
+        for finding in findings:
+            con.execute(
+                """
+                INSERT INTO vulnerability_finding (finding_id, vulnerability_id)
+                VALUES (?, ?)
+                """,
+                (int(finding["id"]), int(vulnerability["id"])),
+            )
+        sync_vulnerability_markdown(con, int(vulnerability["id"]))
+        con.commit()
+        render_report()
+        print(
+            f"attached "
+            + ",".join(display_finding(int(row["id"])) for row in findings)
+            + f" to {display_vulnerability(int(vulnerability['id']))}"
+        )
+
+
+def cmd_vulnerability_update(args: argparse.Namespace) -> None:
+    with connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        vulnerability = vulnerability_row(con, args.vulnerability)
+        updates: dict[str, object] = {}
+        if args.title is not None:
+            updates["title"] = clean_single_line(args.title, "title")
+        if args.severity is not None:
+            updates["severity"] = args.severity.upper()
+        if args.status is not None:
+            updates["status"] = args.status
+        if args.cwe is not None:
+            updates["cwe"] = clean_single_line(args.cwe, "CWE")
+        if args.group_key is not None:
+            updates["group_key"] = normalize_group_key(args.group_key)
+        if not updates:
+            raise PTError("no update supplied")
+        assignments = ", ".join(f"{column}=?" for column in updates)
+        con.execute(
+            f"UPDATE vulnerabilities SET {assignments} WHERE id=?",
+            (*updates.values(), int(vulnerability["id"])),
+        )
+        sync_vulnerability_markdown(con, int(vulnerability["id"]))
+        con.commit()
+        render_report()
+        print(
+            f"updated {display_vulnerability(int(vulnerability['id']))}: "
+            + ", ".join(updates)
+        )
+
+
+def parse_markdown_metadata(
+    text: str, labels: Iterable[str] = REQUIRED_MD_LABELS
+) -> dict[str, str]:
     metadata: dict[str, str] = {}
-    for label in REQUIRED_MD_LABELS:
+    for label in labels:
         match = re.search(
             rf"^- \*\*{re.escape(label)}\*\*:\s*(.*)$", text, re.MULTILINE
         )
@@ -2373,31 +3017,27 @@ HTTP_REQUEST_LINE = re.compile(r"^[A-Z]+\s+\S+\s+HTTP/\d", re.MULTILINE)
 NO_HTTP_REQUEST_OPTOUT = re.compile(r"<!--\s*no-http-request:\s*\S.*?-->", re.DOTALL)
 
 
-def http_request_warnings(
-    con: sqlite3.Connection, finding_id: int, text: str, label: str
+def vulnerability_http_request_warnings(
+    con: sqlite3.Connection, vulnerability_id: int, text: str, label: str
 ) -> list[str]:
-    """A complete HTTP request is mandatory evidence for every active finding, so
-    the client has a real, confirmed-working request at patch time. Requires >=1
-    evidence of kind 'http-request' whose file has a valid request line, unless
-    the write-up carries a `<!-- no-http-request: reason -->` opt-out. Warnings
-    here are blocking under --hook and fatal under --strict."""
     if NO_HTTP_REQUEST_OPTOUT.search(text):
         return []
     rows = con.execute(
         """
         SELECT DISTINCT e.path
-        FROM finding_observation fo
+        FROM vulnerability_finding vf
+        JOIN finding_observation fo ON fo.finding_id=vf.finding_id
         JOIN evidence e ON e.observation_id=fo.observation_id
-        WHERE fo.finding_id=? AND e.kind=?
+        WHERE vf.vulnerability_id=? AND e.kind=?
         ORDER BY e.path
         """,
-        (finding_id, HTTP_REQUEST_KIND),
+        (vulnerability_id, HTTP_REQUEST_KIND),
     ).fetchall()
     if not rows:
         return [
-            f"{label} has no HTTP request evidence; a complete HTTP request is "
-            "mandatory (register one with kind=http-request, or add "
-            "<!-- no-http-request: reason --> to the write-up)"
+            f"{label} has no HTTP request evidence through its source findings; "
+            "a complete request is mandatory (or add "
+            "<!-- no-http-request: reason --> to the vulnerability write-up)"
         ]
     for row in rows:
         src = ROOT / row["path"]
@@ -2406,8 +3046,8 @@ def http_request_warnings(
         ):
             return []
     return [
-        f"{label} HTTP request evidence is incomplete: no registered http-request "
-        "file has a valid request line (METHOD path HTTP/x.y)"
+        f"{label} HTTP request evidence is incomplete: no source-finding "
+        "http-request file has a valid request line (METHOD path HTTP/x.y)"
     ]
 
 
@@ -2481,9 +3121,6 @@ def doctor(con: sqlite3.Connection) -> tuple[list[str], list[str]]:
             expected_evidence = evidence_markdown(con, finding_id).strip()
             if rendered_evidence != expected_evidence:
                 errors.append(f"{label} managed evidence block drift")
-        if row["lifecycle"] in ACTIVE_LIFECYCLES:
-            warnings.extend(reference_warnings(text, label))
-            warnings.extend(http_request_warnings(con, finding_id, text, label))
         if row["lifecycle"] in ACTIVE_LIFECYCLES and not row["group_key"]:
             errors.append(f"{label} active finding has no group_key (legacy/untriaged)")
         if row["lifecycle"] in ACTIVE_LIFECYCLES and row["segment_id"] is None:
@@ -2506,6 +3143,107 @@ def doctor(con: sqlite3.Connection) -> tuple[list[str], list[str]]:
             errors.append(f"{label} confirmed finding has no linked observation")
         if row["lifecycle"] == "confirmed" and evidence_count == 0:
             errors.append(f"{label} confirmed finding has no registered evidence")
+
+    vulnerability_rows = con.execute(
+        """
+        SELECT v.*, COALESCE(s.name, '') AS segment
+        FROM vulnerabilities v
+        LEFT JOIN segment s ON s.id=v.segment_id
+        ORDER BY v.id
+        """
+    ).fetchall()
+    vulnerability_slugs = {row["slug"] for row in vulnerability_rows}
+    vulnerabilities_dir = ROOT / "vulnerabilities"
+    vulnerability_file_slugs = {
+        path.stem
+        for path in vulnerabilities_dir.glob("*.md")
+        if path.name != "_template.md"
+    }
+    for slug in sorted(vulnerability_file_slugs - vulnerability_slugs):
+        errors.append(
+            f"orphan report write-up vulnerabilities/{slug}.md has no DB row"
+        )
+    for row in vulnerability_rows:
+        vulnerability_id = int(row["id"])
+        label = display_vulnerability(vulnerability_id)
+        writeup = ROOT / (
+            row["evidence_path"] or f"vulnerabilities/{row['slug']}.md"
+        )
+        if not writeup.is_file():
+            errors.append(
+                f"{label} DB row has no report write-up: {writeup.relative_to(ROOT)}"
+            )
+            continue
+        source_rows = con.execute(
+            """
+            SELECT f.id, f.lifecycle, f.segment_id
+            FROM vulnerability_finding vf
+            JOIN finding f ON f.id=vf.finding_id
+            WHERE vf.vulnerability_id=?
+            ORDER BY f.id
+            """,
+            (vulnerability_id,),
+        ).fetchall()
+        if not source_rows:
+            errors.append(f"{label} has no source finding")
+        for source in source_rows:
+            source_label = display_finding(int(source["id"]))
+            if source["lifecycle"] != "confirmed":
+                errors.append(
+                    f"{label} source {source_label} lifecycle={source['lifecycle']}"
+                )
+            if source["segment_id"] != row["segment_id"]:
+                errors.append(f"{label} source {source_label} has a different segment")
+
+        text = writeup.read_text(encoding="utf-8", errors="replace")
+        metadata = parse_markdown_metadata(text, VULNERABILITY_MD_LABELS)
+        for required in VULNERABILITY_MD_LABELS:
+            if required not in metadata:
+                errors.append(
+                    f"{label} report write-up missing metadata field '{required}'"
+                )
+        expected = {
+            "Title": row["title"],
+            "Vuln_ID": row["slug"],
+            "Group key": row["group_key"],
+            "Severity": row["severity"],
+            "Status": row["status"],
+            "Affected asset(s)": vulnerability_affected_assets(
+                con, vulnerability_id
+            ),
+            "Related CWE(s)": row["cwe"] or "<fill CWE>",
+            "Segment": row["segment"] or "<missing>",
+            "Source finding(s)": vulnerability_finding_refs(
+                con, vulnerability_id
+            ),
+            "Observation(s)": vulnerability_observation_refs(
+                con, vulnerability_id
+            ),
+        }
+        for field, value in expected.items():
+            if field in metadata and metadata[field] != value:
+                errors.append(
+                    f"{label} {field} drift: DB='{value}' Markdown='{metadata[field]}'"
+                )
+        evidence_match = re.search(
+            re.escape(EVIDENCE_START)
+            + r"\s*\n(.*?)\n\s*"
+            + re.escape(EVIDENCE_END),
+            text,
+            re.DOTALL,
+        )
+        if not evidence_match:
+            errors.append(f"{label} report write-up missing ptctl evidence markers")
+        elif evidence_match.group(1).strip() != vulnerability_evidence_markdown(
+            con, vulnerability_id
+        ).strip():
+            errors.append(f"{label} managed evidence block drift")
+        warnings.extend(reference_warnings(text, label))
+        warnings.extend(
+            vulnerability_http_request_warnings(
+                con, vulnerability_id, text, label
+            )
+        )
 
     for row in con.execute("SELECT * FROM evidence ORDER BY id"):
         path = ROOT / row["path"]
@@ -2614,7 +3352,7 @@ def doctor(con: sqlite3.Connection) -> tuple[list[str], list[str]]:
         text = activity.read_text(encoding="utf-8", errors="replace")
         index: dict[int, tuple[str, str, str]] = {}
         pattern = re.compile(
-            r"^\|\s*F(\d+)\s*\|\s*([A-Z]+)\s*\|.*?"
+            r"^\|\s*V(\d+)\s*\|\s*([A-Z]+)\s*\|.*?"
             r"\]\(([^)]+)\)\s*\|\s*([^|]+)\|",
             re.MULTILINE,
         )
@@ -2624,48 +3362,50 @@ def doctor(con: sqlite3.Connection) -> tuple[list[str], list[str]]:
                 match.group(3).strip(),
                 match.group(4).strip(),
             )
-        expected_ids = {
-            int(row["id"]) for row in rows if row["lifecycle"] == "confirmed"
-        }
+        expected_ids = {int(row["id"]) for row in vulnerability_rows}
         if set(index) != expected_ids:
             missing = sorted(expected_ids - set(index))
             extra = sorted(set(index) - expected_ids)
             if missing:
                 errors.append(
                     "rendered index missing "
-                    + ", ".join(display_finding(value) for value in missing)
+                    + ", ".join(display_vulnerability(value) for value in missing)
                 )
             if extra:
                 errors.append(
-                    "rendered index contains inactive "
-                    + ", ".join(display_finding(value) for value in extra)
+                    "rendered index contains unmanaged "
+                    + ", ".join(display_vulnerability(value) for value in extra)
                 )
-        for row in active_rows:
-            finding_id = int(row["id"])
-            if row["lifecycle"] != "confirmed" or finding_id not in index:
+        for row in vulnerability_rows:
+            vulnerability_id = int(row["id"])
+            if vulnerability_id not in index:
                 continue
-            severity, link, status = index[finding_id]
-            expected_link = row["evidence_path"] or f"findings/{row['slug']}.md"
+            severity, link, status = index[vulnerability_id]
+            expected_link = (
+                row["evidence_path"] or f"vulnerabilities/{row['slug']}.md"
+            )
             if severity != row["severity"]:
                 errors.append(
-                    f"{display_finding(finding_id)} index severity drift: "
+                    f"{display_vulnerability(vulnerability_id)} index severity drift: "
                     f"DB={row['severity']} index={severity}"
                 )
             if link != expected_link:
                 errors.append(
-                    f"{display_finding(finding_id)} index link drift: "
+                    f"{display_vulnerability(vulnerability_id)} index link drift: "
                     f"DB={expected_link} index={link}"
                 )
             if status != row["status"]:
                 errors.append(
-                    f"{display_finding(finding_id)} index status drift: "
+                    f"{display_vulnerability(vulnerability_id)} index status drift: "
                     f"DB={row['status']} index={status}"
                 )
 
     journal = ROOT / "journal.md"
     if journal.is_file():
         unreferenced: list[int] = []
-        ref_pattern = re.compile(r"(?:\[?(?:O\d{4}|F\d{2,})\]?)", re.IGNORECASE)
+        ref_pattern = re.compile(
+            r"(?:\[?(?:O\d{4}|F\d{2,}|V\d{2,})\]?)", re.IGNORECASE
+        )
         for number, line in enumerate(
             journal.read_text(encoding="utf-8", errors="replace").splitlines(), 1
         ):
@@ -2676,7 +3416,7 @@ def doctor(con: sqlite3.Connection) -> tuple[list[str], list[str]]:
             suffix = "…" if len(unreferenced) > 10 else ""
             warnings.append(
                 f"journal has {len(unreferenced)} #observation entries without "
-                f"O/F reference (lines {preview}{suffix})"
+                f"O/F/V reference (lines {preview}{suffix})"
             )
 
     return errors, warnings
@@ -2738,7 +3478,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         "remains untriaged (state=new)" in message
         or (
             message.startswith("journal has ")
-            and "#observation entries without O/F reference" in message
+            and "#observation entries without O/F/V reference" in message
         )
         or "HTTP request evidence" in message
         for message in warnings
@@ -2755,7 +3495,32 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
 def cmd_board(args: argparse.Namespace) -> None:
     with connect() as con:
-        print("--- PT finding board ---")
+        print("--- PT registry board ---")
+        vulnerabilities = con.execute(
+            """
+            SELECT v.id, v.severity, v.title, v.status,
+                   COUNT(vf.finding_id) AS findings
+            FROM vulnerabilities v
+            LEFT JOIN vulnerability_finding vf ON vf.vulnerability_id=v.id
+            GROUP BY v.id
+            ORDER BY CASE v.severity
+                       WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2
+                       WHEN 'MEDIUM' THEN 3 WHEN 'LOW' THEN 4 ELSE 5
+                     END, v.id
+            LIMIT ?
+            """,
+            (args.limit,),
+        ).fetchall()
+        if vulnerabilities:
+            print("Report vulnerabilities:")
+            for row in vulnerabilities:
+                print(
+                    f"  {display_vulnerability(int(row['id']))} "
+                    f"{row['severity']:<13} findings={row['findings']} — {row['title']}"
+                )
+        else:
+            print("Report vulnerabilities: none")
+
         findings = con.execute(
             """
             SELECT f.id, f.severity, f.title, f.group_key, f.status,
@@ -2809,7 +3574,7 @@ def cmd_board(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ptctl.py",
-        description="Idempotent observation/finding registry for this engagement",
+        description="Idempotent observation/finding/vulnerability registry for this engagement",
     )
     top = parser.add_subparsers(dest="entity", required=True)
 
@@ -2897,6 +3662,54 @@ def build_parser() -> argparse.ArgumentParser:
     merge.add_argument("--into", required=True)
     merge.set_defaults(func=cmd_finding_merge)
 
+    vulnerability = top.add_parser(
+        "vulnerability",
+        help="manage the explicit allowlist of issues that enter the report",
+    )
+    vulnerability_commands = vulnerability.add_subparsers(
+        dest="command", required=True
+    )
+
+    promote = vulnerability_commands.add_parser(
+        "promote", help="promote one finding and copy its write-up"
+    )
+    promote.add_argument("finding")
+    promote.add_argument("--slug")
+    promote.add_argument("--group-key")
+    promote.add_argument("--title")
+    promote.add_argument("--severity", choices=SEVERITIES)
+    promote.add_argument("--status", choices=STATUSES)
+    promote.add_argument("--cwe")
+    promote.set_defaults(func=cmd_vulnerability_promote)
+
+    vulnerability_create = vulnerability_commands.add_parser(
+        "create", help="create one report vulnerability from one or more findings"
+    )
+    vulnerability_create.add_argument("--slug", required=True)
+    vulnerability_create.add_argument("--group-key", required=True)
+    vulnerability_create.add_argument("--title", required=True)
+    vulnerability_create.add_argument("--severity", required=True, choices=SEVERITIES)
+    vulnerability_create.add_argument("--status", default="open", choices=STATUSES)
+    vulnerability_create.add_argument("--cwe")
+    vulnerability_create.add_argument("--finding", action="append", required=True)
+    vulnerability_create.set_defaults(func=cmd_vulnerability_create)
+
+    vulnerability_attach = vulnerability_commands.add_parser(
+        "attach", help="add further findings to an existing report vulnerability"
+    )
+    vulnerability_attach.add_argument("vulnerability")
+    vulnerability_attach.add_argument("--finding", action="append", required=True)
+    vulnerability_attach.set_defaults(func=cmd_vulnerability_attach)
+
+    vulnerability_update = vulnerability_commands.add_parser("update")
+    vulnerability_update.add_argument("vulnerability")
+    vulnerability_update.add_argument("--title")
+    vulnerability_update.add_argument("--severity", choices=SEVERITIES)
+    vulnerability_update.add_argument("--status", choices=STATUSES)
+    vulnerability_update.add_argument("--cwe")
+    vulnerability_update.add_argument("--group-key")
+    vulnerability_update.set_defaults(func=cmd_vulnerability_update)
+
     poc = top.add_parser("poc")
     poc_commands = poc.add_subparsers(dest="command", required=True)
     poc_sync = poc_commands.add_parser("sync")
@@ -2978,7 +3791,7 @@ def build_parser() -> argparse.ArgumentParser:
     context_history.set_defaults(func=cmd_context_history)
 
     context_resume = context_commands.add_parser(
-        "resume", help="load the dossier for one canonical F## or O#### reference"
+        "resume", help="load the dossier for one canonical V##, F##, or O#### reference"
     )
     context_resume.add_argument("reference")
     context_resume.add_argument(

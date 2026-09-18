@@ -115,3 +115,23 @@ ORDER BY CASE f.severity
             WHEN 'LOW'           THEN 4
             WHEN 'INFORMATIONAL' THEN 5
          END, f.id;
+
+.print ''
+.print '-- report vulnerabilities --'
+SELECT DISTINCT v.severity, v.status, v.slug, v.title, v.evidence_path
+FROM vulnerabilities v
+JOIN vulnerability_finding vf ON vf.vulnerability_id = v.id
+JOIN finding_asset fa          ON fa.finding_id = vf.finding_id
+JOIN asset a                   ON a.id = fa.asset_id
+WHERE a.host_id IN (
+    SELECT id      FROM host    WHERE name = :host OR dns = :host
+    UNION
+    SELECT host_id FROM host_ip WHERE ip = :host
+)
+ORDER BY CASE v.severity
+            WHEN 'CRITICAL'      THEN 1
+            WHEN 'HIGH'          THEN 2
+            WHEN 'MEDIUM'        THEN 3
+            WHEN 'LOW'           THEN 4
+            WHEN 'INFORMATIONAL' THEN 5
+         END, v.id;

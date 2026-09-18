@@ -72,7 +72,6 @@ remember@claude-plugins-official code-simplifier@claude-plugins-official \
 miro@claude-plugins-official"
 BASE_PLUGINS="$(echo $BASE_PLUGINS)"
 BURP="burpsuite-project-parser@trailofbits"
-FPCHECK="fp-check@trailofbits"
 PW="playwright@claude-plugins-official"
 CR="code-review@claude-plugins-official"
 ACB="audit-context-building@trailofbits"
@@ -83,13 +82,13 @@ APK="firebase-apk-scanner@trailofbits"
 SCRA="supply-chain-risk-auditor@trailofbits"
 TM="trailmark@trailofbits"
 declare -A EXPECTED_EXTRA=(
-    [web]="$BURP $FPCHECK $PW $CR"
-    [external]="$BURP $FPCHECK $PW $CR"
-    [internal]="$FPCHECK"
-    [cloud]="$FPCHECK $SCRA"
-    [mobile]="$FPCHECK $ACB $VA $CR $CSEC $APK $SCRA"
-    [code]="$ACB $VA $SA $FPCHECK $CR $CSEC $SCRA $TM"
-    [full]="$BURP $FPCHECK $PW $CR $ACB $VA $SA $CSEC $APK $SCRA $TM"
+    [web]="$BURP $PW $CR"
+    [external]="$BURP $PW $CR"
+    [internal]=""
+    [cloud]="$SCRA"
+    [mobile]="$ACB $VA $CR $CSEC $APK $SCRA"
+    [code]="$ACB $VA $SA $CR $CSEC $SCRA $TM"
+    [full]="$BURP $PW $CR $ACB $VA $SA $CSEC $APK $SCRA $TM"
     [lite]=""
     [none]=""
 )
@@ -105,6 +104,11 @@ for t in "${!EXPECTED_EXTRA[@]}"; do
     extra="${extra# }"
     [ "$extra" = "${EXPECTED_EXTRA[$t]}" ] || \
         fail "type=$t row expected '${EXPECTED_EXTRA[$t]}' got '$extra'"
+done
+# fp-check is intentionally absent from every installation profile.
+for t in "${!EXPECTED_EXTRA[@]}"; do
+    bash "$SCRIPT" --print-plugins "$t" | tr ' ' '\n' | grep -qx 'fp-check@trailofbits' && \
+        fail "type=$t must not install fp-check"
 done
 # A row that repeats a base plugin must not install it twice.
 [ "$(bash "$SCRIPT" --print-plugins full | tr ' ' '\n' | sort | uniq -d)" = "" ] || \
@@ -227,9 +231,13 @@ pass ".devcontainer/ scaffolded with all placeholders substituted (internal prof
 test -x engagement-internal/db/ptctl.py || fail "db/ptctl.py missing or not executable"
 python3 engagement-internal/db/ptctl.py --help | grep -q observation || \
     fail "db/ptctl.py help should expose the observation workflow"
+python3 engagement-internal/db/ptctl.py --help | grep -q vulnerability || \
+    fail "db/ptctl.py help should expose the report allowlist workflow"
 python3 engagement-internal/db/ptctl.py --help | grep -q context || \
     fail "db/ptctl.py help should expose progressive context"
 test -f engagement-internal/PT_PLAYBOOK.md || fail "on-demand PT_PLAYBOOK.md missing"
+test -f engagement-internal/vulnerabilities/_template.md || \
+    fail "managed vulnerability template missing"
 test -f engagement-internal/.context/handoff.md || fail "initial session handoff missing"
 test -f engagement-internal/.context/state.json || fail "initial session delta state missing"
 grep -qx 'active.json' engagement-internal/.context/.gitignore || \
@@ -567,11 +575,25 @@ for p in $(bash "$SCRIPT" --print-plugins web); do
         fail "plan must apply the same list to Codex"
 done
 
-# An entry set to false is declared-but-off and must not be installed.
-jq '.enabledPlugins["fp-check@trailofbits"] = false' \
+# A retired plugin in a legacy engagement is removed from both agents and is
+# never reinstalled, even if stale settings still declare it as enabled.
+jq '.enabledPlugins["fp-check@trailofbits"] = true' \
     engagement-sync/.claude/settings.json > "$TMP/s.json" && \
     mv "$TMP/s.json" engagement-sync/.claude/settings.json
-bash "$SYNC" engagement-sync --dry-run | grep -q 'install fp-check@trailofbits' && \
+retired_plan="$(bash "$SYNC" engagement-sync --dry-run)"
+echo "$retired_plan" | grep -q \
+    'claude plugin uninstall fp-check@trailofbits --scope project -y' || \
+    fail "sync must uninstall retired fp-check from Claude"
+echo "$retired_plan" | grep -q 'codex plugin remove fp-check@trailofbits' || \
+    fail "sync must remove retired fp-check from Codex"
+echo "$retired_plan" | grep -q 'plugin install fp-check@trailofbits' && \
+    fail "sync must never reinstall retired fp-check"
+
+# An entry set to false is declared-but-off and must not be installed.
+jq '.enabledPlugins["code-review@claude-plugins-official"] = false' \
+    engagement-sync/.claude/settings.json > "$TMP/s.json" && \
+    mv "$TMP/s.json" engagement-sync/.claude/settings.json
+bash "$SYNC" engagement-sync --dry-run | grep -q 'install code-review@claude-plugins-official' && \
     fail "a plugin set to false must not be installed"
 
 # No plugin enabled at all: exit 0 after registering the marketplaces. Every

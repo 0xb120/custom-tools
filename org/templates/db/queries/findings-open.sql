@@ -1,4 +1,4 @@
--- Open findings, severity-sorted.
+-- Open confirmed technical findings, including those not selected for report.
 .mode column
 .headers on
 SELECT f.slug,

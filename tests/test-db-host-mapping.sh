@@ -114,7 +114,7 @@ sqlite3 "$db" "INSERT INTO credential (username, secret, secret_type) VALUES ('a
 sqlite3 "$db" "INSERT INTO credential_asset (credential_id, asset_id, verified_at) VALUES (1, 1, CURRENT_TIMESTAMP);"
 sqlite3 "$db" "INSERT INTO credential_asset (credential_id, asset_id, verified_at) VALUES (1, 2, CURRENT_TIMESTAMP);"
 
-for q in assets-by-segment assets-no-access creds-multi-host findings-open hosts; do
+for q in assets-by-segment assets-no-access creds-multi-host findings-open hosts vulnerabilities-report; do
     sqlite3 "$db" < "$QDIR/$q.sql" >/dev/null 2>"$TMP/q.err" || \
         { echo "--- $q stderr ---" >&2; cat "$TMP/q.err" >&2; fail "$q.sql failed on new schema"; }
 done

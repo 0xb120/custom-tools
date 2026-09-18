@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests the report-formatting rules enforced by the PostToolUse(Write|Edit) hook
-# org/templates/claude/hooks/check-report-format.sh on finding write-ups and the
+# org/templates/claude/hooks/check-report-format.sh on finding/vulnerability write-ups and the
 # rendered activity file:
 #   - report prose is never hard-wrapped mid-paragraph (pre-existing rule),
 #   - every fenced code block opens with a language (```sh, ```http, ...),
@@ -19,7 +19,7 @@ command -v jq >/dev/null 2>&1 || fail "jq is required to exercise the hook"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/findings"
+mkdir -p "$TMP/findings" "$TMP/vulnerabilities"
 
 HOOK_OUT=""
 hook() {  # $1 = file path; sets HOOK_OUT, returns the hook exit code
@@ -72,6 +72,12 @@ grep -q 'code fence without a language' <<<"$HOOK_OUT" \
 grep -q 'line 7' <<<"$HOOK_OUT" \
     || fail "the message must point at the offending fence line: $HOOK_OUT"
 pass "a code fence without a language is rejected"
+
+cp "$TMP/findings/no-lang.md" "$TMP/vulnerabilities/no-lang.md"
+if hook "$TMP/vulnerabilities/no-lang.md"; then
+    fail "a malformed vulnerability write-up must be rejected"
+fi
+pass "vulnerability write-ups are covered by the report-format hook"
 
 # --- Test 3: an indented fence is rejected ----------------------------------
 printf '# Indented fence\n\n1. Run:\n\n   ```sh\n   id\n   ```\n\n2. Done.\n' \

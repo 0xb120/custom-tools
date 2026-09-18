@@ -1,5 +1,5 @@
 #!/bin/bash
-# Regenerate the asset / credentials / findings tables in <activity>.md from
+# Regenerate the asset / credentials / report-vulnerability tables in <activity>.md from
 # db/engagement.db. Replaces only the content between matching marker pairs:
 #   <!-- db:render <name> -->  ...  <!-- /db:render <name> -->
 # Everything outside the markers is preserved.
@@ -110,27 +110,26 @@ ORDER BY c.username, h.name, a.port;
 SQL
 echo "" >> "$credentials_md"
 
-findings_md="$tmpdir/findings.md"
-echo "" > "$findings_md"
-sqlite3 "$db" -markdown <<'SQL' >> "$findings_md"
-SELECT 'F' || printf('%02d', f.id) AS ID,
-       f.severity                  AS Severity,
-       '[' || f.title || '](' || COALESCE(f.evidence_path, 'findings/' || f.slug || '.md') || ')' AS Title,
-       f.status                    AS Status,
+vulnerabilities_md="$tmpdir/vulnerabilities.md"
+echo "" > "$vulnerabilities_md"
+sqlite3 "$db" -markdown <<'SQL' >> "$vulnerabilities_md"
+SELECT 'V' || printf('%02d', v.id) AS ID,
+       v.severity                  AS Severity,
+       '[' || v.title || '](' || COALESCE(v.evidence_path, 'vulnerabilities/' || v.slug || '.md') || ')' AS Title,
+       v.status                    AS Status,
        COALESCE(s.name, '')        AS Segment
-FROM finding f
-LEFT JOIN segment s ON s.id = f.segment_id
-WHERE f.lifecycle = 'confirmed'
-ORDER BY CASE f.severity
+FROM vulnerabilities v
+LEFT JOIN segment s ON s.id = v.segment_id
+ORDER BY CASE v.severity
             WHEN 'CRITICAL'      THEN 1
             WHEN 'HIGH'          THEN 2
             WHEN 'MEDIUM'        THEN 3
             WHEN 'LOW'           THEN 4
             WHEN 'INFORMATIONAL' THEN 5
          END,
-         f.id;
+         v.id;
 SQL
-echo "" >> "$findings_md"
+echo "" >> "$vulnerabilities_md"
 
 # ---------------------------------------------------------------------------
 # Splice each block into <activity>.md between its marker pair.
@@ -158,6 +157,13 @@ replace_block() {
 replace_block hosts       "$hosts_md"       "$activity_md"
 replace_block assets      "$assets_md"      "$activity_md"
 replace_block credentials "$credentials_md" "$activity_md"
-replace_block findings    "$findings_md"    "$activity_md"
+if grep -qF '<!-- db:render vulnerabilities -->' "$activity_md"; then
+    report_block='vulnerabilities'
+else
+    # Compatibility with an in-flight activity file created before the report
+    # allowlist existed. The block name is legacy; its contents are still V##.
+    report_block='findings'
+fi
+replace_block "$report_block" "$vulnerabilities_md" "$activity_md"
 
 echo "Rendered $activity_md from $db"

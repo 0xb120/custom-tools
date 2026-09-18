@@ -2,19 +2,19 @@
 
 This is an on-demand reference. It is intentionally excluded from session boot context; consult only the relevant section when needed. Hard engagement rules remain in `AGENTS.md`.
 
-## Finding write-up requirements
+## Finding and vulnerability write-ups
 
-Each `findings/<slug>.md` must retain the template sections for Vuln_ID, group key, title, severity, status, affected assets, CWE, segment, observation IDs, impact summary, description, reproduction steps, managed evidence, remediation, and references. `ptctl.py` owns managed metadata and evidence blocks; the tester owns the narrative sections.
+`findings/<slug>.md` records confirmed technical state. It may be detailed and report-ready, but it remains internal until explicitly selected. `vulnerabilities/<slug>.md` is the report allowlist and uses the same narrative structure, with an additional managed `Source finding(s)` field. `ptctl.py` owns managed metadata and evidence blocks; the tester owns the narrative sections.
 
-The `## References` section is mandatory: at least 3 external references, every one a link (URL), with at least one from `cheatsheetseries.owasp.org` or `portswigger.net/web-security` (prefer the vulnerability-class cheat sheet and the matching Web Security Academy topic, then vendor/CVE/standards/research links). `doctor` flags a shortfall as a warning; `doctor --strict` fails on it, so resolve it before packaging.
+For every promoted vulnerability, the `## References` section is mandatory: at least 3 external references, every one a link (URL), with at least one from `cheatsheetseries.owasp.org` or `portswigger.net/web-security`. `doctor` flags a shortfall as a warning; `doctor --strict` fails on it. References on unpromoted findings are optional.
 
 The managed evidence block renders each registered path as a navigable Markdown link relative to the write-up (`[scans/…](../scans/…)`); `ptctl.py` maintains it, so never hand-edit the paths.
 
-Every finding must include at least one complete, unredacted HTTP request as evidence (`--kind http-request`): the real request confirmed working during the test, with no removed headers or redacted fields, so the client can replay it at patch time. `doctor` blocks the stop and `doctor --strict` fails until each active finding has an `http-request` evidence whose file contains a valid request line (`METHOD path HTTP/x.y`). Opt out only for genuinely non-HTTP findings by adding `<!-- no-http-request: <reason> -->` to the write-up.
+Every vulnerability must resolve through its source findings to at least one complete, unredacted HTTP request (`--kind http-request`) whose file has a valid request line (`METHOD path HTTP/x.y`). Opt out only for a genuinely non-HTTP vulnerability by adding `<!-- no-http-request: <reason> -->` to the vulnerability write-up.
 
 Write-up Markdown must stay copy-paste-ready: one paragraph per line (never hard-wrapped), and every fenced code block opened with a language (`http` for raw requests and responses, `sh` for commands, `json`/`xml`/`sql` for payloads, `text` when nothing else fits). Indentation is reserved for nested list items — spaces, never a tab — and is allowed nowhere else: a fence, paragraph, or table belonging to a numbered step still starts at column 0, because indented it nests into the list item or turns into an indented-code block and the client cannot paste it out of the report. The Claude `PostToolUse` hook `check-report-format.sh` rejects an offending edit; Codex edits go through `apply_patch` and are not hooked, so there the rule stands on the author.
 
-The activity-level findings index is rendered from the DB. IDs are `F##`, never reused; active rows are severity-sorted and link to the write-up.
+The activity-level vulnerability index is rendered exclusively from the `vulnerabilities` table. IDs are `V##`, never reused; rows are severity-sorted and link to `vulnerabilities/`. Confirmed `F##` records never appear unless explicitly promoted or consolidated.
 
 ## Severity scale
 
@@ -28,7 +28,7 @@ Choose the level from assessed impact and exploitability in this engagement, not
 
 ## Engagement database
 
-`db/engagement.db` is canonical for the host map, asset inventory, verified credentials, observations, evidence metadata, and finding metadata. Inventory tables may be maintained with SQLite; observations and findings must use `db/ptctl.py`.
+`db/engagement.db` is canonical for the host map, asset inventory, verified credentials, observations, evidence metadata, findings, and report vulnerabilities. Inventory tables may be maintained with SQLite; observations, findings, and vulnerabilities must use `db/ptctl.py`.
 
 Host identity is stable across addresses:
 

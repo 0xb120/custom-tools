@@ -1,6 +1,6 @@
 # {{ACTIVITY_NAME}}
 
-> Per-finding write-ups live in `findings/<finding_slug>.md`. This file is the index plus the executive narrative for the deliverable.
+> Technical findings live in `findings/`; only selected report vulnerabilities in `vulnerabilities/` appear in this deliverable.
 
 ## Host inventory
 
@@ -42,16 +42,16 @@ Source of truth: `db/engagement.db` (`credential` + `credential_asset`). Rendere
 
 <!-- /db:render credentials -->
 
-## Findings index
+## Vulnerabilities index
 
-Source of truth: `db/engagement.db` (`finding`). Finding commands render this index automatically; `bash db/render.sh` refreshes it after raw inventory writes. Per-finding prose stays in `findings/<finding_slug>.md`.
+Source of truth: `db/engagement.db` (`vulnerabilities`). Only issues explicitly promoted with `db/ptctl.py vulnerability ...` are rendered. Finding files remain internal technical state under `findings/`; report prose lives in `vulnerabilities/<slug>.md`.
 
-<!-- db:render findings -->
+<!-- db:render vulnerabilities -->
 
 | ID | Severity | Title | Status | Segment |
 |----|----------|-------|--------|---------|
 
-<!-- /db:render findings -->
+<!-- /db:render vulnerabilities -->
 
 
 ## Executive summary

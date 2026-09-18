@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests the "complete HTTP request evidence" rule enforced by ptctl doctor:
-#   - every active finding must have >=1 evidence of kind 'http-request' whose file
+#   - every report vulnerability must have >=1 source evidence of kind 'http-request' whose file
 #     contains a valid HTTP request line (^METHOD path HTTP/x.y),
 #   - unless the write-up carries an opt-out marker <!-- no-http-request: reason -->.
 # Warning in plain doctor, blocking under --hook (Stop hook), fatal under --strict.
@@ -54,23 +54,24 @@ printf 'just some notes, no request line\n' > scans/web/bad.http
 "${PT[@]}" finding create --slug xss --group-key 'xss|reflected|web' \
     --title 'Reflected XSS' --severity MEDIUM --segment web \
     --observation O0001 >/dev/null || fail "finding create failed"
-set_refs findings/xss.md
+"${PT[@]}" vulnerability promote F01 >/dev/null || fail "promotion1 failed"
+set_refs vulnerabilities/xss.md
 
 # --- Test 1: no http-request evidence → warn (plain), block (--hook), fatal (--strict) ---
 out="$("${PT[@]}" doctor 2>&1)" || fail "plain doctor must stay non-blocking (exit 0)"
 echo "$out" | grep -q 'HTTP request evidence' \
-    || fail "plain doctor should warn that the finding has no HTTP request evidence"
-pass "plain doctor warns (non-blocking) when a finding has no HTTP request evidence"
+    || fail "plain doctor should warn that the vulnerability has no HTTP request evidence"
+pass "plain doctor warns (non-blocking) when a vulnerability has no HTTP request evidence"
 
 if "${PT[@]}" doctor --hook --quiet >/dev/null 2>&1; then
-    fail "doctor --hook (Stop hook) must block when a finding has no HTTP request"
+    fail "doctor --hook (Stop hook) must block when a vulnerability has no HTTP request"
 fi
-pass "doctor --hook blocks the stop when a finding has no HTTP request"
+pass "doctor --hook blocks the stop when a vulnerability has no HTTP request"
 
 if "${PT[@]}" doctor --strict >/dev/null 2>&1; then
-    fail "doctor --strict must fail when a finding has no HTTP request"
+    fail "doctor --strict must fail when a vulnerability has no HTTP request"
 fi
-pass "doctor --strict fails when a finding has no HTTP request"
+pass "doctor --strict fails when a vulnerability has no HTTP request"
 
 # --- Test 2: registering a complete request makes F01 compliant ---
 "${PT[@]}" observation evidence O0001 --evidence scans/web/req.http --kind http-request \
@@ -88,7 +89,8 @@ pass "a registered http-request with a valid request line satisfies the rule"
 "${PT[@]}" finding create --slug open-redirect --group-key 'open-redirect|returnurl|web' \
     --title 'Open redirect' --severity LOW --segment web \
     --observation O0002 >/dev/null || fail "finding2 create failed"
-set_refs findings/open-redirect.md
+"${PT[@]}" vulnerability promote F02 >/dev/null || fail "promotion2 failed"
+set_refs vulnerabilities/open-redirect.md
 "${PT[@]}" doctor 2>&1 | grep -q 'is incomplete' \
     || fail "doctor should flag an http-request evidence with no valid request line"
 if "${PT[@]}" doctor --strict >/dev/null 2>&1; then
@@ -100,21 +102,22 @@ pass "an http-request evidence without a request line is flagged as incomplete"
     >/dev/null || fail "could not repair F02 with a complete request"
 "${PT[@]}" doctor --strict >/dev/null 2>&1 || fail "F02 repair should restore --strict"
 
-# --- Test 4: the opt-out marker exempts a finding with no http-request evidence ---
+# --- Test 4: the opt-out marker exempts a vulnerability with no http-request evidence ---
 "${PT[@]}" observation add --title 'Weak TLS config' --family tls --segment web \
     --asset A1 --component tls --route '/' --source manual \
     --evidence scans/web/shot3.png --kind screenshot >/dev/null || fail "obs3 add failed"
 "${PT[@]}" finding create --slug weak-tls --group-key 'tls|weak-config|web' \
     --title 'Weak TLS config' --severity LOW --segment web \
     --observation O0003 >/dev/null || fail "finding3 create failed"
-set_refs findings/weak-tls.md
+"${PT[@]}" vulnerability promote F03 >/dev/null || fail "promotion3 failed"
+set_refs vulnerabilities/weak-tls.md
 if "${PT[@]}" doctor --strict >/dev/null 2>&1; then
     fail "F03 without a request should fail --strict before the opt-out marker"
 fi
 printf '\n<!-- no-http-request: TLS misconfiguration, not tied to a single request -->\n' \
-    >> findings/weak-tls.md
+    >> vulnerabilities/weak-tls.md
 "${PT[@]}" doctor --strict >/dev/null 2>&1 \
     || fail "the no-http-request opt-out marker should exempt the finding"
-pass "the opt-out marker exempts a finding with no http-request evidence"
+pass "the opt-out marker exempts a vulnerability with no http-request evidence"
 
 echo "All http-request-rule tests passed."
