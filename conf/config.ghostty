@@ -1,0 +1,84 @@
+# ======= THEME =======
+
+theme = "Dark+"
+#theme = "Dark Modern"
+#theme = "Adwaita Dark"
+#theme = "iTerm2 Tango Dark"
+#theme = "Monokai Soda"
+#theme = "Starlight"
+
+background = 1e1e1e
+cursor-style = bar
+
+# ======= NOTIFICATION =======
+
+notify-on-command-finish = unfocused
+notify-on-command-finish-after = 30s
+
+# ======= UTILS =======
+
+shell-integration-features = ssh-env,ssh-terminfo
+mouse-scroll-multiplier = precision:0.4,discrete:2
+mouse-hide-while-typing = true
+focus-follows-mouse = true
+confirm-close-surface = false
+resize-overlay = never
+scrollback-limit = 100000000
+clipboard-trim-trailing-spaces = true
+
+# ======= TMUX-STYLE KEYBINDINGS =======
+
+split-inherit-working-directory = true
+tab-inherit-working-directory = true
+copy-on-select = clipboard
+
+# Ctrl+F is the prefix; press it twice to send Ctrl+F to the terminal.
+keybind = ctrl+f>ctrl+f=text:\x06
+keybind = ctrl+f>escape=ignore
+keybind = ctrl+f>shift+\=new_split:right
+keybind = ctrl+f>-=new_split:down
+keybind = ctrl+f>r=reload_config
+
+keybind = alt+arrow_left=goto_split:left
+keybind = alt+arrow_right=goto_split:right
+keybind = alt+arrow_up=goto_split:up
+keybind = alt+arrow_down=goto_split:down
+keybind = ctrl+f>arrow_left=goto_split:left
+keybind = ctrl+f>arrow_right=goto_split:right
+keybind = ctrl+f>arrow_up=goto_split:up
+keybind = ctrl+f>arrow_down=goto_split:down
+keybind = ctrl+f>x=close_surface
+keybind = ctrl+f>z=toggle_split_zoom
+keybind = ctrl+f>ctrl+arrow_left=resize_split:left,10
+keybind = ctrl+f>ctrl+arrow_right=resize_split:right,10
+keybind = ctrl+f>ctrl+arrow_up=resize_split:up,10
+keybind = ctrl+f>ctrl+arrow_down=resize_split:down,10
+keybind = ctrl+f>alt+arrow_left=resize_split:left,50
+keybind = ctrl+f>alt+arrow_right=resize_split:right,50
+keybind = ctrl+f>alt+arrow_up=resize_split:up,50
+keybind = ctrl+f>alt+arrow_down=resize_split:down,50
+
+# Ghostty tabs correspond to tmux windows.
+keybind = ctrl+f>c=new_tab
+keybind = alt+page_up=previous_tab
+keybind = alt+page_down=next_tab
+# In tmux, p is overridden by paste-buffer in the user's config.
+keybind = ctrl+f>n=next_tab
+keybind = ctrl+f>0=goto_tab:1
+keybind = ctrl+f>1=goto_tab:2
+keybind = ctrl+f>2=goto_tab:3
+keybind = ctrl+f>3=goto_tab:4
+keybind = ctrl+f>4=goto_tab:5
+keybind = ctrl+f>5=goto_tab:6
+keybind = ctrl+f>6=goto_tab:7
+keybind = ctrl+f>7=goto_tab:8
+keybind = ctrl+f>8=goto_tab:9
+keybind = ctrl+f>9=goto_tab:10
+keybind = ctrl+f>w=toggle_tab_overview
+keybind = ctrl+f>,=prompt_tab_title
+keybind = ctrl+f>shift+6=close_tab:this
+keybind = ctrl+f>shift+'=toggle_command_palette
+
+# Copy the Ghostty selection, rather than a tmux buffer.
+keybind = ctrl+f>shift+c=copy_to_clipboard:plain
+keybind = ctrl+f>p=paste_from_clipboard

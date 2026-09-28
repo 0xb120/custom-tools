@@ -1,0 +1,8 @@
+# Local secrets — never commit (holds live API keys)
+conf/devcontainer.env
+
+# Local tool binaries and machine-specific state
+.local/
+
+# Remember plugin session buffer
+.remember/
